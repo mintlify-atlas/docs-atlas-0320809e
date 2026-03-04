@@ -1,0 +1,301 @@
+---
+title: Running SafeNetworking
+description: Learn how to start, stop, and manage the SafeNetworking service
+---
+
+## Starting SafeNetworking
+
+SafeNetworking is started using the `sfn` command-line interface. The application initializes background processes and starts a Flask web server for event processing.
+
+### Basic Start Command
+
+```bash
+sfn start
+```
+
+When you run this command, SafeNetworking:
+
+1. Initializes the application with configured log levels
+2. Connects to Elasticsearch at the configured host and port
+3. Starts background processing threads
+4. Launches the Flask application server
+
+<Info>
+SafeNetworking will log initialization messages showing the log level and Elasticsearch connection details from your configuration.
+</Info>
+
+### Background Processes
+
+SafeNetworking automatically starts three background processing threads when initialized:
+
+<CardGroup cols={3}>
+  <Card title="DNS Processing" icon="globe">
+    Processes DNS threat events from Elasticsearch, enriches them with AutoFocus data, and updates event documents with malware intelligence.
+  </Card>
+  <Card title="IoT Processing" icon="microchip">
+    Retrieves IoT honeypot data from external sources and stores malicious IP/domain information for threat correlation.
+  </Card>
+  <Card title="AutoFocus Points" icon="chart-line">
+    Monitors AutoFocus API point consumption to prevent exceeding rate limits and manages throttling automatically.
+  </Card>
+</CardGroup>
+
+#### DNS Processing Thread
+
+Location: `project/dns/runner.py:109`
+
+The DNS processor:
+- Runs continuously at intervals set by `DNS_POOL_TIME` (default: 5 seconds)
+- Searches for unprocessed DNS events in Elasticsearch
+- Queries AutoFocus for domain threat intelligence
+- Updates events with malware tags, confidence levels, and campaign information
+- Can be disabled by setting `DNS_PROCESSING = False` in `.panrc`
+
+#### IoT Processing Thread
+
+Location: `project/iot/runner.py:120`
+
+The IoT processor:
+- Runs continuously at intervals set by `IOT_POOL_TIME` (default: 600 seconds)
+- Retrieves updates from external IoT honeypot database
+- Normalizes and stores malicious IoT device information
+- Disabled by default; enable with `IOT_PROCESSING = True` in `.panrc`
+
+#### AutoFocus Points Monitor
+
+Location: `project/dns/dnsutils.py:140`
+
+The AF points monitor:
+- Checks AutoFocus API point totals at intervals set by `AF_POOL_TIME` (default: 600 seconds)
+- Updates the `af-details` document in Elasticsearch
+- Tracks both minute and daily point consumption
+- Automatically throttles or pauses processing when limits are approached
+
+## Configuration Options
+
+SafeNetworking is configured through the `.panrc` file located in the application base directory. This file overrides default settings defined in `project/__init__.py`.
+
+### Required Configuration
+
+<Warning>
+The AutoFocus API key **must** be configured before starting SafeNetworking. The application will exit if this is not set.
+</Warning>
+
+```python
+AUTOFOCUS_API_KEY = "your-api-key-here"
+```
+
+### Application Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DEBUG_MODE` | `False` | Process one event at a time for debugging |
+| `DNS_POOL_TIME` | `5` | Seconds between DNS processing cycles |
+| `URL_POOL_TIME` | `10` | Seconds between URL processing cycles |
+| `AF_POOL_TIME` | `600` | Seconds between AutoFocus point checks |
+| `IOT_POOL_TIME` | `600` | Seconds between IoT database updates |
+| `DNS_PROCESSING` | `True` | Enable/disable DNS event processing |
+| `IOT_PROCESSING` | `False` | Enable/disable IoT processing |
+
+### AutoFocus Rate Limiting
+
+<Note>
+SafeNetworking includes intelligent rate limiting to prevent exhausting AutoFocus API points.
+</Note>
+
+```python
+# Slow down to single-threaded processing at this threshold
+AF_POINTS_LOW = 5000
+
+# Stop all processing at this threshold
+AF_POINT_NOEXEC = 500
+
+# Wait time (seconds) when processing stops
+AF_NOEXEC_CKTIME = 3600
+```
+
+When daily points drop below `AF_POINTS_LOW`, processing switches to single-threaded mode. When points drop below `AF_POINT_NOEXEC`, all processing pauses until points refresh.
+
+### Multi-Processing Configuration
+
+<Warning>
+The combined total of `DNS_POOL_COUNT` and `URL_POOL_COUNT` should not exceed 16 to avoid exhausting AutoFocus minute point limits.
+</Warning>
+
+```python
+# Number of parallel DNS processing threads (max 16)
+DNS_POOL_COUNT = 16
+
+# Number of parallel URL processing threads (max 16)  
+URL_POOL_COUNT = 0
+
+# Number of events to query per processing cycle
+DNS_EVENT_QUERY_SIZE = 1000
+IOT_EVENT_QUERY_SIZE = 1000
+```
+
+### Caching Settings
+
+```python
+# Days before domain cache is refreshed from AutoFocus
+DNS_DOMAIN_INFO_MAX_AGE = 30
+
+# Days before tag cache is refreshed
+DOMAIN_TAG_INFO_MAX_AGE = 120
+
+# Minutes to wait for AutoFocus query results
+AF_LOOKUP_TIMEOUT = 2
+
+# Minimum query completion percentage to accept
+AF_LOOKUP_MAX_PERCENTAGE = 20
+```
+
+### Elasticsearch Configuration
+
+```python
+ELASTICSEARCH_HOST = "localhost"
+ELASTICSEARCH_PORT = "9200"
+ELASTICSEARCH_HTTP_AUTH = ""
+KIBANA_HOST = "localhost"
+KIBANA_PORT = "5601"
+```
+
+### Flask Server Settings
+
+```python
+FLASK_HOST = "localhost"  # Listening interface
+FLASK_PORT = 5000          # Flask server port
+```
+
+## Stopping SafeNetworking
+
+To stop SafeNetworking, use standard process termination:
+
+```bash
+# Graceful shutdown
+Ctrl+C
+
+# Or find and kill the process
+pkill -f "sfn start"
+```
+
+<Warning>
+During shutdown, background threads will complete their current processing cycle before terminating. Allow a few seconds for graceful shutdown.
+</Warning>
+
+## Restarting SafeNetworking
+
+To restart the application:
+
+```bash
+# Stop the current process
+pkill -f "sfn start"
+
+# Start SafeNetworking again
+sfn start
+```
+
+<Info>
+Restarting is useful after modifying configuration in `.panrc` or updating code.
+</Info>
+
+## Running as a Service
+
+For production deployments, run SafeNetworking as a systemd service to ensure automatic startup and restart on failure.
+
+### Create Service File
+
+Create `/etc/systemd/system/safenetworking.service`:
+
+```ini
+[Unit]
+Description=SafeNetworking Threat Intelligence Service
+After=network.target elasticsearch.service
+Requires=elasticsearch.service
+
+[Service]
+Type=simple
+User=sfn
+Group=sfn
+WorkingDirectory=/opt/safenetworking
+Environment="PATH=/opt/safenetworking/venv/bin"
+ExecStart=/opt/safenetworking/venv/bin/sfn start
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Enable and Start Service
+
+```bash
+# Reload systemd configuration
+sudo systemctl daemon-reload
+
+# Enable service to start on boot
+sudo systemctl enable safenetworking
+
+# Start the service
+sudo systemctl start safenetworking
+
+# Check service status
+sudo systemctl status safenetworking
+```
+
+### Manage the Service
+
+```bash
+# Stop the service
+sudo systemctl stop safenetworking
+
+# Restart the service
+sudo systemctl restart safenetworking
+
+# View service logs
+sudo journalctl -u safenetworking -f
+```
+
+## Other CLI Commands
+
+### Check Version
+
+```bash
+sfn version
+```
+
+Outputs the current SafeNetworking version from configuration.
+
+### Admin Commands
+
+```bash
+# Export all documents from an index
+sfn admin --datadump --index sfn-dns-details --sortfield @timestamp --outfile output.txt
+```
+
+### IoT Commands
+
+```bash
+# Export IoT honeypot data
+sfn iot --datadump
+```
+
+### Load Data
+
+```bash
+# Load CSV file into Elasticsearch
+sfn load <csvfile> <index>
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring" icon="chart-mixed" href="/operations/monitoring">
+    Learn how to monitor SafeNetworking and view logs
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Resolve common issues and errors
+  </Card>
+</CardGroup>

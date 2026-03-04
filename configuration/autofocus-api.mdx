@@ -1,0 +1,287 @@
+---
+title: 'AutoFocus API Configuration'
+description: 'Configure AutoFocus API integration for threat intelligence enrichment'
+---
+
+## Overview
+
+SafeNetworking uses the Palo Alto Networks AutoFocus API to enrich threat data with intelligence about malicious domains, URLs, and files. This page covers how to configure the AutoFocus API key and manage point usage to ensure continuous operation.
+
+## Obtaining an AutoFocus API Key
+
+To use SafeNetworking's threat intelligence features, you need an AutoFocus API key:
+
+1. Log in to the [AutoFocus portal](https://autofocus.paloaltonetworks.com)
+2. Navigate to **Settings** > **API Settings**
+3. Generate a new API key or copy your existing key
+4. Store the key securely - you'll need it for configuration
+
+<Warning>
+Keep your AutoFocus API key secure. Anyone with access to the key can consume your AutoFocus API points.
+</Warning>
+
+## Configuration File
+
+All AutoFocus settings are configured in the `.panrc` file located in your home directory:
+
+```bash
+~/.panrc
+```
+
+This file is automatically linked to the project directory during installation:
+
+```bash
+~/safe-networking/project/.panrc -> ~/.panrc
+```
+
+## Setting the API Key
+
+Add your AutoFocus API key to the `.panrc` file:
+
+```python
+# API Key for Autofocus
+AUTOFOCUS_API_KEY = "your-api-key-here"
+```
+
+<Note>
+The AutoFocus API key **must** be set before SafeNetworking can process events and gather threat intelligence data.
+</Note>
+
+## Point Management Configuration
+
+AutoFocus uses a point-based system to rate limit API queries. SafeNetworking includes several settings to manage point consumption and prevent service disruption.
+
+### Low Points Threshold
+
+When AutoFocus points drop below this threshold, SafeNetworking automatically switches to slow processing mode (one event at a time) to conserve points:
+
+```python
+# Number of AF points left to slow down processing
+# Default: 5000
+AF_POINTS_LOW = 5000
+```
+
+**Default:** `5000` points
+
+### Point Exhaustion Protection
+
+When points drop below this critical threshold, SafeNetworking stops all processing to prevent point exhaustion:
+
+```python
+# Number of AF points left to stop processing completely
+# Default: 500
+AF_POINT_NOEXEC = 500
+```
+
+**Default:** `500` points
+
+### Check Interval
+
+When processing is paused due to low points, SafeNetworking checks the point balance at this interval and resumes when points are above the `AF_POINT_NOEXEC` threshold:
+
+```python
+# Time in seconds to wait before checking points again
+# Default: 3600 (1 hour)
+AF_NOEXEC_CKTIME = 3600
+```
+
+**Default:** `3600` seconds (1 hour)
+
+<Info>
+AutoFocus points typically regenerate over time. The 1-hour check interval allows points to replenish before resuming operations.
+</Info>
+
+## API Timeout Configuration
+
+AutoFocus queries can take significant time when searching through billions of records. These settings control query timeouts to balance thoroughness with performance.
+
+### Lookup Timeout
+
+Maximum time to wait for an AutoFocus query to complete:
+
+```python
+# Maximum query time in minutes
+# Default: 2
+AF_LOOKUP_TIMEOUT = 2
+```
+
+**Default:** `2` minutes
+
+Most relevant threat intelligence is returned within the first few minutes. This setting prevents queries from running for extended periods (which can exceed 20 minutes).
+
+### Maximum Query Percentage
+
+If the query completion percentage is below this threshold when the timeout is reached, SafeNetworking will abandon the query:
+
+```python
+# Minimum acceptable query completion percentage
+# Default: 20
+AF_LOOKUP_MAX_PERCENTAGE = 20
+```
+
+**Default:** `20` percent
+
+<Tip>
+The combination of 2 minutes timeout and 20% completion typically provides the most recent and relevant results while maintaining good performance.
+</Tip>
+
+## Processing Pool Configuration
+
+Control the number of concurrent processes for DNS and URL lookups:
+
+```python
+# Number of DNS processing threads (max 16)
+DNS_POOL_COUNT = 16
+
+# Number of URL processing threads (max 16)
+URL_POOL_COUNT = 0
+```
+
+<Warning>
+**Important:** `DNS_POOL_COUNT + URL_POOL_COUNT` must not exceed 16, or you will exhaust your AutoFocus minute points. The application will log an error if this limit is exceeded.
+</Warning>
+
+### Pool Timing
+
+Control how frequently each pool checks for new events:
+
+```python
+# DNS pool check interval (seconds)
+DNS_POOL_TIME = 5
+
+# URL pool check interval (seconds)
+URL_POOL_TIME = 10
+
+# AutoFocus enrichment interval (seconds)
+AF_POOL_TIME = 600
+```
+
+## API Endpoints
+
+SafeNetworking uses the following AutoFocus API endpoints (configured in `project/__init__.py`):
+
+```python
+AUTOFOCUS_HOSTNAME = "autofocus.paloaltonetworks.com"
+AUTOFOCUS_SEARCH_URL = "https://autofocus.paloaltonetworks.com/api/v1.0/samples/search"
+AUTOFOCUS_RESULTS_URL = "https://autofocus.paloaltonetworks.com/api/v1.0/samples/results/"
+AUTOFOCUS_TAG_URL = "https://autofocus.paloaltonetworks.com/api/v1.0/tag/"
+```
+
+These endpoints are preconfigured and typically don't need to be changed.
+
+## Rate Limiting Best Practices
+
+<Steps>
+  <Step title="Monitor Point Usage">
+    Regularly check your AutoFocus point balance to ensure you have sufficient points for your workload.
+  </Step>
+  
+  <Step title="Adjust Pool Counts">
+    If you're consuming points too quickly, reduce `DNS_POOL_COUNT` or increase `DNS_POOL_TIME` to slow processing.
+  </Step>
+  
+  <Step title="Set Conservative Thresholds">
+    Keep `AF_POINTS_LOW` high enough (5000+) to allow time to address point exhaustion before hitting `AF_POINT_NOEXEC`.
+  </Step>
+  
+  <Step title="Cache Management">
+    Use `DNS_DOMAIN_INFO_MAX_AGE` to control how often cached threat intelligence is refreshed:
+    
+    ```python
+    # Cache age in days before re-querying AutoFocus
+    DNS_DOMAIN_INFO_MAX_AGE = 30
+    ```
+  </Step>
+</Steps>
+
+## Configuration Example
+
+Here's a complete `.panrc` configuration for AutoFocus:
+
+```python
+################################################################################
+#                                 API Keys
+################################################################################
+
+# AutoFocus API Key (REQUIRED)
+AUTOFOCUS_API_KEY = "your-api-key-here"
+
+################################################################################
+#                           Point Management
+################################################################################
+
+# Slow down processing when points drop to this level
+AF_POINTS_LOW = 5000
+
+# Stop processing when points drop to this critical level
+AF_POINT_NOEXEC = 500
+
+# Check interval when processing is stopped (seconds)
+AF_NOEXEC_CKTIME = 3600
+
+################################################################################
+#                           API Timeouts
+################################################################################
+
+# Query timeout in minutes
+AF_LOOKUP_TIMEOUT = 2
+
+# Minimum acceptable query completion percentage
+AF_LOOKUP_MAX_PERCENTAGE = 20
+
+################################################################################
+#                           Processing Pools
+################################################################################
+
+# DNS processing threads (max combined total: 16)
+DNS_POOL_COUNT = 16
+URL_POOL_COUNT = 0
+
+# Pool check intervals (seconds)
+DNS_POOL_TIME = 5
+URL_POOL_TIME = 10
+AF_POOL_TIME = 600
+
+# Cache settings
+DNS_DOMAIN_INFO_MAX_AGE = 30
+DOMAIN_TAG_INFO_MAX_AGE = 120
+```
+
+## Troubleshooting
+
+### API Key Not Set
+
+**Error:** SafeNetworking fails to start or cannot query AutoFocus
+
+**Solution:** Verify `AUTOFOCUS_API_KEY` is set in `~/.panrc` and is not set to `"NOT-SET"` or empty.
+
+### Point Exhaustion
+
+**Symptom:** Processing stops frequently
+
+**Solutions:**
+- Increase `AF_POINTS_LOW` threshold
+- Reduce `DNS_POOL_COUNT`
+- Increase `DNS_POOL_TIME` interval
+- Increase `DNS_DOMAIN_INFO_MAX_AGE` to reduce queries
+
+### Slow Performance
+
+**Symptom:** Threat enrichment takes too long
+
+**Solutions:**
+- Decrease `AF_LOOKUP_TIMEOUT` (but you may get incomplete results)
+- Increase `AF_LOOKUP_MAX_PERCENTAGE` for more complete queries
+- Increase `DNS_POOL_COUNT` (if points allow)
+
+## Related Configuration
+
+- [Elasticsearch Configuration](/configuration/elasticsearch) - Configure the backend datastore
+- [Logstash Pipelines](/configuration/logstash-pipelines) - Configure log ingestion
+
+## Source References
+
+Configuration options are defined in:
+- `project/__init__.py:184-190` - API endpoints and key
+- `project/__init__.py:76-127` - Point management and timeout settings
+- `install/sfn/.panrc` - Example configuration file

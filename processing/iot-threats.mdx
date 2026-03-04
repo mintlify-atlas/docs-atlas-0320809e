@@ -1,0 +1,526 @@
+---
+title: IoT Threat Processing
+description: How SafeNetworking integrates IoT honeypot data to enrich threat intelligence
+---
+
+## Overview
+
+SafeNetworking integrates with an external IoT honeypot database to identify and classify threats targeting Internet of Things devices. The system periodically retrieves threat intelligence, normalizes malware family names, and stores enriched data locally for correlation with firewall events.
+
+<Note>
+IoT processing is disabled by default. Enable it in `.panrc`:
+```python
+IOT_PROCESSING = True
+```
+</Note>
+
+## How IoT Processing Works
+
+### Architecture Overview
+
+The IoT threat processing pipeline consists of three stages:
+
+<Steps>
+  <Step title="Query Honeypot Database">
+    Connect to external IoT honeypot API to retrieve new threat observations since last update
+  </Step>
+  <Step title="Normalize Threat Data">
+    Convert raw honeypot data into standardized format with Unit42 naming conventions
+  </Step>
+  <Step title="Update Local Database">
+    Store enriched IoT threat data in Elasticsearch for correlation with firewall logs
+  </Step>
+</Steps>
+
+## Database Synchronization
+
+The `processIoT()` function orchestrates the update cycle:
+
+```python
+# From runner.py:136-171
+def processIoT():
+    iotIndex = 'sfn-iot-details'
+    
+    # Calculate time since last update
+    try:
+        latestTime = round(getLatestTime(iotIndex))
+        app.logger.debug(f"Latest time diff for IoT DB is {latestTime} minutes")
+    except Exception as e:
+        # If no previous data, start from February 2019
+        timeStamp = datetime.strptime('2019-02-01 01:00:00', '%Y-%m-%d %H:%M:%S')
+        latestTime = round((datetime.utcnow() - timeStamp).total_seconds() / 60.0)
+    
+    # Retrieve updates from honeypot API
+    updateDict = getExternalIoTDBUpdate(latestTime)
+    
+    if updateDict and updateDict['data']:
+        normalizedDict = normalizeIoTData(updateDict)
+        dbUpdate = updateLocalIoTDB(normalizedDict)
+        
+        if "SUCCESS" in dbUpdate:
+            app.logger.info("Successfully updated IoT DB")
+    else:
+        app.logger.info("Update from IoT DB is empty, nothing to do")
+```
+
+### Honeypot API Integration
+
+The system connects to an external IoT honeypot database service:
+
+```python
+# From runner.py:14-32
+def getExternalIoTDBUpdate(gapTime):
+    hpQuery = f"{app.config['IOT_DB_URL']}/query_sfn_ip?gap={gapTime}"
+    
+    try:
+        queryResponse = requests.get(url=hpQuery)
+        if queryResponse.status_code == 200:
+            return literal_eval(queryResponse.text)
+        else:
+            raise Exception(f"Request returned status {queryResponse.status_code}")
+    except Exception as e:
+        app.logger.error(f"Error querying IoT HoneyPot DB: {e}")
+```
+
+The API endpoint is configured in `__init__.py`:
+
+```python
+IOT_DB_URL = "http://35.160.110.244:58888/api/v1"
+```
+
+<Warning>
+**External Dependency**: IoT processing requires connectivity to the honeypot database API. Ensure your SafeNetworking server can reach this endpoint.
+</Warning>
+
+## Family Name Normalization
+
+Raw honeypot data uses inconsistent naming conventions. The `__normalizeFamilyInfo()` function standardizes malware family names to match Unit42 taxonomy:
+
+```python
+# From runner.py:34-62
+def __normalizeFamilyInfo(familyInfo):
+    if (familyInfo['family'] == 'mirai') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Unit42.ELFMirai"
+        newPubFamily = "ELFMirai"
+        
+    elif (familyInfo['family'] == 'frs') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Unit42.FRS_Ransomware"
+        newPubFamily = "FRS_Ransomware"
+        
+    elif (familyInfo['family'] == 'xorddos') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Commodity.XorDDoS"
+        newPubFamily = "XorDDoS"
+        
+    elif (familyInfo['family'] == 'coinminer') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Commodity.Coinminer"
+        newPubFamily = "Coinminer"
+        
+    elif (familyInfo['family'] == 'ganiw') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Unit42.Ganiw"
+        newPubFamily = "Ganiw"
+        
+    elif (familyInfo['family'] == 'ddostf') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Unit42.DDoSTF"
+        newPubFamily = "DDoSTF"
+        
+    else:
+        newFamily = "Unit42." + familyInfo['family']
+        newPubFamily = familyInfo['family']
+    
+    return newFamily, newPubFamily
+```
+
+### Supported IoT Malware Families
+
+The system recognizes and normalizes these common IoT threat families:
+
+<CardGroup cols={2}>
+  <Card title="Mirai" icon="network-wired">
+    **Unit42.ELFMirai** - DDoS botnet targeting Linux IoT devices via default credentials
+  </Card>
+  <Card title="XorDDoS" icon="shield-virus">
+    **Commodity.XorDDoS** - Linux trojan for DDoS attacks, uses XOR-based encryption
+  </Card>
+  <Card title="Ganiw" icon="bug">
+    **Unit42.Ganiw** - IoT worm spreading through SSH and Telnet brute force
+  </Card>
+  <Card title="DDoSTF" icon="server">
+    **Unit42.DDoSTF** - DDoS toolkit framework for compromised IoT devices
+  </Card>
+  <Card title="FRS Ransomware" icon="lock">
+    **Unit42.FRS_Ransomware** - Ransomware targeting embedded Linux systems
+  </Card>
+  <Card title="Coinminer" icon="coins">
+    **Commodity.Coinminer** - Cryptocurrency mining malware for IoT devices
+  </Card>
+</CardGroup>
+
+## Data Normalization Process
+
+The `normalizeIoTData()` function transforms raw honeypot responses into structured threat records:
+
+```python
+# From runner.py:65-94
+def normalizeIoTData(updateDict):
+    iotList = []
+    normalizedData = {}
+    
+    for item in updateDict['data']:
+        normalizedData['id'] = item['id']
+        normalizedData['ip'] = item['ip']
+        normalizedData['time'] = item['time']
+        
+        # Parse embedded family info string
+        familyInfo = literal_eval(item['familyinfo'])
+        normalizedData['filetype'] = familyInfo['filetype']
+        
+        # Normalize family names
+        normalizedData['tag_name'], normalizedData['public_tag_name'] = \
+            __normalizeFamilyInfo(familyInfo)
+        
+        # Enrich with AutoFocus tag metadata
+        tagObject = processTag(normalizedData['tag_name'])
+        normalizedData['tag_class'] = tagObject[2]
+        normalizedData['tag_group_name'] = tagObject[3]
+        normalizedData['description'] = tagObject[4]
+        
+        iotList.append(dict(normalizedData))
+    
+    return {'data': iotList}
+```
+
+### Raw vs. Normalized Data Example
+
+**Raw Honeypot Response:**
+```json
+{
+  "data": [
+    {
+      "id": "12345",
+      "ip": "192.0.2.100",
+      "time": "2026-03-04T08:30:15",
+      "familyinfo": "{'family': 'mirai', 'filetype': 'elf'}"
+    }
+  ]
+}
+```
+
+**Normalized Output:**
+```json
+{
+  "data": [
+    {
+      "id": "12345",
+      "ip": "192.0.2.100",
+      "time": "2026-03-04T08:30:15",
+      "filetype": "elf",
+      "tag_name": "Unit42.ELFMirai",
+      "public_tag_name": "ELFMirai",
+      "tag_class": "malware_family",
+      "tag_group_name": "IoT Botnet",
+      "description": "Mirai botnet malware targeting IoT devices with default credentials"
+    }
+  ]
+}
+```
+
+## Local Database Updates
+
+The `updateLocalIoTDB()` function stores enriched data in Elasticsearch:
+
+```python
+# From runner.py:97-133
+def updateLocalIoTDB(updateDict):
+    retType = "SUCCESS"
+    
+    for item in updateDict['data']:
+        try:
+            # Check if record already exists
+            iotDoc = IoTDetailsDoc.get(id=item['id'])
+        except NotFoundError:
+            # Create new document
+            app.logger.info(f"No IoT info doc found for {item['ip']} - creating")
+            iotDoc = IoTDetailsDoc(meta={'id': item['id']})
+        
+        try:
+            # Update document fields
+            iotDoc.meta.id = item['id']
+            iotDoc.ip = item['ip']
+            iotDoc.time = item['time']
+            iotDoc.filetype = item['filetype']
+            iotDoc.tag_name = item['tag_name']
+            iotDoc.tag_class = item['tag_class']
+            iotDoc.tag_description = item['description']
+            iotDoc.tag_group_name = item['tag_group_name']
+            iotDoc.public_tag_name = item['public_tag_name']
+            iotDoc.save()
+        except Exception as e:
+            app.logger.error(f"Unable to save IoT DB document: {e}")
+            retType = "FAIL"
+    
+    return retType
+```
+
+## Document Structure
+
+IoT threat data is stored in the `sfn-iot-details` index:
+
+```python
+# From iot.py:5-41
+class IoTDetailsDoc(DocType):
+    id = Text(analyzer='snowball', fields={'raw': Keyword()})
+    time = Keyword()
+    ip = Ip()
+    filetype = Text()
+    tag_name = Text()
+    public_tag_name = Text()
+    tag_description = Text()
+    tag_class = Text()
+    tag_group_name = Text()
+    
+    class Index:
+        name = 'sfn-iot-details'
+```
+
+### Example Document
+
+```json
+{
+  "id": "12345",
+  "ip": "192.0.2.100",
+  "time": "2026-03-04T08:30:15",
+  "filetype": "elf",
+  "tag_name": "Unit42.ELFMirai",
+  "public_tag_name": "ELFMirai",
+  "tag_description": "Mirai botnet malware targeting IoT devices with default credentials. Spreads via Telnet/SSH brute force and exploits default passwords.",
+  "tag_class": "malware_family",
+  "tag_group_name": "IoT Botnet"
+}
+```
+
+## Scheduling and Updates
+
+IoT processing runs on a configurable schedule:
+
+```python
+# From __init__.py:65
+app.config['IOT_POOL_TIME'] = 600  # 600 seconds = 10 minutes
+```
+
+### Update Cycle
+
+<Steps>
+  <Step title="Calculate Time Gap">
+    Query `sfn-iot-details` index for most recent threat observation timestamp. Calculate minutes elapsed since last update.
+  </Step>
+  <Step title="API Query">
+    Request honeypot data from last N minutes: `/query_sfn_ip?gap={minutes}`
+  </Step>
+  <Step title="Process Updates">
+    Normalize family names, enrich with AutoFocus tags, and store in Elasticsearch
+  </Step>
+  <Step title="Sleep">
+    Wait `IOT_POOL_TIME` seconds before next cycle
+  </Step>
+</Steps>
+
+<Tip>
+The system automatically backtracks to February 2019 if no existing IoT data is found, ensuring historical coverage when first enabled.
+</Tip>
+
+## Configuration Options
+
+Configure IoT processing in `.panrc`:
+
+```python
+# Enable/disable IoT processing
+IOT_PROCESSING = True
+
+# Update interval (seconds)
+IOT_POOL_TIME = 600
+
+# Honeypot database API endpoint
+IOT_DB_URL = "http://35.160.110.244:58888/api/v1"
+
+# Number of events to query per batch (if needed)
+IOT_EVENT_QUERY_SIZE = 1000
+```
+
+### Tuning Recommendations
+
+<AccordionGroup>
+  <Accordion title="High-Activity Environments">
+    If your honeypot database receives frequent updates:
+    
+    - Reduce `IOT_POOL_TIME` to 300-600 seconds (5-10 minutes)
+    - Monitor API endpoint performance
+  </Accordion>
+  
+  <Accordion title="Low-Activity or Testing">
+    For environments with infrequent IoT threats:
+    
+    - Increase `IOT_POOL_TIME` to 1800-3600 seconds (30-60 minutes)
+    - Reduces unnecessary API calls
+  </Accordion>
+  
+  <Accordion title="Custom Honeypot Sources">
+    To use your own IoT honeypot database:
+    
+    - Update `IOT_DB_URL` to your API endpoint
+    - Ensure API returns compatible format (see normalization section)
+    - May need to modify `__normalizeFamilyInfo()` for custom family names
+  </Accordion>
+</AccordionGroup>
+
+## Event Correlation
+
+IoT threat data can be correlated with firewall traffic logs to identify compromised IoT devices on your network:
+
+### Query Example
+
+Find firewall traffic from IPs in IoT threat database:
+
+```json
+GET traffic-*/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "terms": {
+            "SourceIP": {
+              "index": "sfn-iot-details",
+              "id": "*",
+              "path": "ip"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### Kibana Dashboard Integration
+
+Create visualizations to:
+
+- Map IoT threat IPs to geographic locations
+- Trend IoT malware families over time
+- Identify internal devices communicating with known IoT threat sources
+- Correlate DNS queries to domains associated with IoT C2 infrastructure
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No updates from honeypot database">
+    Check:
+    
+    1. Network connectivity to `IOT_DB_URL`
+    2. API endpoint status (should return HTTP 200)
+    3. `log/sfn.log` for connection errors
+    
+    Test connectivity:
+    ```bash
+    curl http://35.160.110.244:58888/api/v1/query_sfn_ip?gap=60
+    ```
+  </Accordion>
+  
+  <Accordion title="Family normalization errors">
+    If you encounter unknown family names:
+    
+    1. Check `log/sfn.log` for the raw `familyinfo` data
+    2. Add new family mappings to `__normalizeFamilyInfo()` in `runner.py`
+    3. Restart SafeNetworking service
+    
+    Example:
+    ```python
+    elif (familyInfo['family'] == 'newfamily') and (familyInfo['filetype'] == "elf"):
+        newFamily = "Unit42.NewFamily"
+        newPubFamily = "NewFamily"
+    ```
+  </Accordion>
+  
+  <Accordion title="Elasticsearch indexing failures">
+    Common causes:
+    
+    - Incorrect IP format in honeypot data
+    - Disk space exhaustion on Elasticsearch node
+    - Mapping conflicts in `sfn-iot-details` index
+    
+    Check index health:
+    ```bash
+    curl -XGET 'localhost:9200/_cat/indices/sfn-iot-details?v'
+    ```
+  </Accordion>
+  
+  <Accordion title="IoT processing disabled">
+    Verify configuration:
+    
+    ```python
+    # In .panrc
+    IOT_PROCESSING = True
+    ```
+    
+    Restart SafeNetworking:
+    ```bash
+    sudo systemctl restart sfn
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Index Management
+
+The `sfn-iot-details` index grows over time. Consider implementing index lifecycle management:
+
+### Curator Configuration Example
+
+```yaml
+actions:
+  1:
+    action: delete_indices
+    description: Delete IoT threat data older than 90 days
+    options:
+      ignore_empty_list: True
+    filters:
+      - filtertype: pattern
+        kind: prefix
+        value: sfn-iot-details
+      - filtertype: age
+        source: field_stats
+        field: time
+        direction: older
+        unit: days
+        unit_count: 90
+```
+
+## Performance Considerations
+
+<Note>
+IoT processing is lightweight compared to DNS enrichment:
+
+- No AutoFocus API lookups per event (only tag metadata)
+- Simple REST API call to honeypot database
+- Minimal CPU/memory overhead
+- Typical update contains 10-100 records
+</Note>
+
+### Resource Usage
+
+| Component | Impact |
+|-----------|--------|
+| Network bandwidth | ~1-10 KB per update cycle |
+| CPU usage | < 1% (single-threaded) |
+| Memory | < 50 MB |
+| Elasticsearch storage | ~1 KB per threat record |
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="DNS Enrichment" icon="magnifying-glass" href="/processing/dns-enrichment">
+    Learn about DNS threat intelligence enrichment
+  </Card>
+  <Card title="GTP/SCTP Logging" icon="tower-cell" href="/processing/gtp-sctp">
+    Configure service provider protocol logging
+  </Card>
+</CardGroup>

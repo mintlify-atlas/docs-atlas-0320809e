@@ -1,0 +1,802 @@
+---
+title: Troubleshooting SafeNetworking
+description: Diagnose and resolve common issues with SafeNetworking operations
+---
+
+## Connection Errors to Elasticsearch
+
+Elasticsearch connectivity issues are common and can prevent SafeNetworking from processing events.
+
+### Symptoms
+
+- Application fails to start
+- ERROR messages about connection timeouts or refused connections
+- Events not being processed
+
+**Log indicators:**
+```
+[ERROR] : Received a connection timeout error to elasticsearch: Connection timeout
+[ERROR] : Received an error connecting to elasticsearch: Connection refused
+[ERROR] : Transport Error working with abc123: Connection refused
+```
+
+### Solutions
+
+<AccordionGroup>
+  <Accordion title="Verify Elasticsearch is Running" icon="check">
+    Check if Elasticsearch is running:
+    
+    ```bash
+    # Check Elasticsearch status
+    sudo systemctl status elasticsearch
+    
+    # If not running, start it
+    sudo systemctl start elasticsearch
+    
+    # Test connectivity
+    curl -X GET "localhost:9200"
+    ```
+    
+    Expected response:
+    ```json
+    {
+      "name" : "node-1",
+      "cluster_name" : "elasticsearch",
+      "version" : { ... },
+      "tagline" : "You Know, for Search"
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Check Configuration" icon="gear">
+    Verify Elasticsearch connection settings in `.panrc`:
+    
+    ```python
+    ELASTICSEARCH_HOST = "localhost"
+    ELASTICSEARCH_PORT = "9200"
+    ```
+    
+    If Elasticsearch is on a different host or port, update these settings and restart SafeNetworking.
+  </Accordion>
+  
+  <Accordion title="Check Network Connectivity" icon="network-wired">
+    Test network connectivity to Elasticsearch:
+    
+    ```bash
+    # Test connection
+    telnet localhost 9200
+    
+    # Or using netcat
+    nc -zv localhost 9200
+    ```
+    
+    If connection fails, check firewall rules or network configuration.
+  </Accordion>
+  
+  <Accordion title="Review Elasticsearch Logs" icon="file-lines">
+    Check Elasticsearch logs for errors:
+    
+    ```bash
+    # Systemd logs
+    sudo journalctl -u elasticsearch -n 100
+    
+    # Or log files
+    sudo tail -f /var/log/elasticsearch/elasticsearch.log
+    ```
+    
+    Look for:
+    - Out of memory errors
+    - Disk space issues
+    - Configuration errors
+  </Accordion>
+  
+  <Accordion title="Verify Index Health" icon="heart-pulse">
+    Check Elasticsearch cluster and index health:
+    
+    ```bash
+    # Cluster health
+    curl -X GET "localhost:9200/_cluster/health?pretty"
+    
+    # Check indices
+    curl -X GET "localhost:9200/_cat/indices?v"
+    ```
+    
+    If indices are red, you may have shard allocation issues or data corruption.
+  </Accordion>
+</AccordionGroup>
+
+### Prevention
+
+<Tip>
+- Configure Elasticsearch to start automatically: `sudo systemctl enable elasticsearch`
+- Monitor Elasticsearch health regularly
+- Ensure adequate disk space for Elasticsearch data
+- Configure SafeNetworking service to depend on Elasticsearch
+</Tip>
+
+## AutoFocus API Issues
+
+Problems with the AutoFocus API can prevent threat intelligence enrichment.
+
+### Rate Limit Exceeded (Daily)
+
+**Symptoms:**
+- Processing slows down or stops
+- WARNING messages about point exhaustion
+- `AF_POINTS_MODE` activated
+
+**Log indicators:**
+```
+[WARNING] : We have exceeded the daily allotment of points for AutoFocus - going into hibernation mode
+[INFO] : Slowing down execution because daily point total is 4500
+[INFO] : Sleeping for 3600 seconds because daily point total is 450
+```
+
+**What SafeNetworking Does Automatically:**
+
+<Steps>
+  <Step title="Low Points Warning">
+    When daily points drop below `AF_POINTS_LOW` (default: 5000), processing switches to single-threaded mode to conserve points.
+    
+    Location: `project/dns/dnsutils.py:90`
+  </Step>
+  
+  <Step title="Processing Halt">
+    When daily points drop below `AF_POINT_NOEXEC` (default: 500), all processing stops.
+    
+    Location: `project/dns/dnsutils.py:80`
+  </Step>
+  
+  <Step title="Automatic Recovery">
+    The application sleeps for `AF_NOEXEC_CKTIME` (default: 3600 seconds / 1 hour) and checks points again.
+    
+    When points refresh (typically at midnight UTC), processing resumes automatically.
+  </Step>
+</Steps>
+
+**Manual Solutions:**
+
+<CodeGroup>
+```bash Increase Point Thresholds
+# Edit .panrc to be more conservative
+AF_POINTS_LOW = 10000  # Slow down earlier
+AF_POINT_NOEXEC = 1000  # Stop with more cushion
+```
+
+```bash Reduce Processing Load
+# Edit .panrc to process fewer events
+DNS_POOL_COUNT = 8  # Reduce parallel threads
+DNS_EVENT_QUERY_SIZE = 500  # Process fewer events per cycle
+DNS_POOL_TIME = 10  # Wait longer between cycles
+```
+
+```bash Adjust Cache Settings
+# Edit .panrc to cache longer
+DNS_DOMAIN_INFO_MAX_AGE = 60  # Cache domains for 60 days
+DOMAIN_TAG_INFO_MAX_AGE = 180  # Cache tags for 180 days
+```
+</CodeGroup>
+
+### Rate Limit Exceeded (Minute)
+
+**Symptoms:**
+- Brief processing pauses
+- "Minute Bucket Exceeded" messages
+
+**Log indicators:**
+```
+[WARNING] : We have exceeded the minute allotment of points for AutoFocus - going into hibernation mode
+```
+
+**What SafeNetworking Does Automatically:**
+
+The application automatically waits 60 seconds when minute limits are exceeded, then retries the query.
+
+Location: `project/dns/dnsutils.py:98-100`
+
+**Solution:**
+
+<Warning>
+If minute limits are frequently exceeded, reduce `DNS_POOL_COUNT`. The combined total of `DNS_POOL_COUNT` and `URL_POOL_COUNT` should not exceed 16.
+</Warning>
+
+```python
+# Edit .panrc
+DNS_POOL_COUNT = 12  # Reduce from 16
+```
+
+### API Key Issues
+
+**Symptoms:**
+- Application exits immediately on startup
+- CRITICAL error about API key
+
+**Log indicators:**
+```
+[CRITICAL] : API Key for Autofocus is not set in .panrc, exiting
+```
+
+**Solution:**
+
+<Steps>
+  <Step title="Set API Key">
+    Edit `.panrc` in the application base directory:
+    
+    ```python
+    AUTOFOCUS_API_KEY = "your-api-key-here"
+    ```
+  </Step>
+  
+  <Step title="Verify API Key">
+    Test your API key using curl:
+    
+    ```bash
+    curl -X POST "https://autofocus.paloaltonetworks.com/api/v1.0/tag/WildFireTest" \
+      -H "Content-Type: application/json" \
+      -d '{"apiKey": "your-api-key-here"}'
+    ```
+    
+    You should receive a JSON response with tag information.
+  </Step>
+  
+  <Step title="Restart SafeNetworking">
+    ```bash
+    sfn start
+    ```
+  </Step>
+</Steps>
+
+### Query Timeouts
+
+**Symptoms:**
+- Queries to AutoFocus take too long
+- Processing is slow
+- Partial results returned
+
+**Log indicators:**
+```
+[INFO] : Search completion 15% for example.com at 2 minute(s)
+[INFO] : No samples found for example.com in time allotted
+```
+
+**Explanation:**
+
+AutoFocus queries can take 20+ minutes to complete across billions of samples. SafeNetworking uses a timeout system to balance thoroughness with performance.
+
+Location: `project/dns/dnsutils.py:426-438`
+
+**Configuration:**
+
+```python
+# Edit .panrc to adjust timeout behavior
+
+# Minutes to wait for query results (default: 2)
+AF_LOOKUP_TIMEOUT = 2
+
+# Minimum completion percentage to accept (default: 20%)
+AF_LOOKUP_MAX_PERCENTAGE = 20
+```
+
+<Note>
+**How it works:**
+- SafeNetworking submits a query and receives a "cookie"
+- Every minute, it checks query completion percentage
+- If `AF_LOOKUP_TIMEOUT` expires OR completion ≥ `AF_LOOKUP_MAX_PERCENTAGE`, results are accepted
+- Increasing timeout improves result quality but slows processing
+</Note>
+
+**Tuning Recommendations:**
+
+| Scenario | `AF_LOOKUP_TIMEOUT` | `AF_LOOKUP_MAX_PERCENTAGE` |
+|----------|---------------------|---------------------------|
+| Fast processing, acceptable accuracy | 1 | 15 |
+| Balanced (default) | 2 | 20 |
+| High accuracy, slower processing | 3 | 40 |
+| Maximum accuracy | 5 | 60 |
+
+## Processing Halts
+
+SafeNetworking stops processing events without obvious errors.
+
+### Symptoms
+
+- No new events being processed
+- No ERROR messages in logs
+- SafeNetworking process is running
+- Unprocessed events accumulating in Elasticsearch
+
+### Diagnostic Steps
+
+<Steps>
+  <Step title="Check Process Status">
+    Verify SafeNetworking is running:
+    
+    ```bash
+    ps aux | grep sfn
+    
+    # Or if running as a service
+    sudo systemctl status safenetworking
+    ```
+  </Step>
+  
+  <Step title="Review Recent Logs">
+    Check for ERROR or WARNING messages:
+    
+    ```bash
+    tail -100 log/sfn.log | grep -E "ERROR|WARNING|CRITICAL"
+    ```
+  </Step>
+  
+  <Step title="Check AutoFocus Points">
+    Query the af-details document:
+    
+    ```bash
+    curl -X GET "localhost:9200/sfn-details/_doc/af-details?pretty"
+    ```
+    
+    Check `daily_points_remaining`. If below 500, processing is paused automatically.
+  </Step>
+  
+  <Step title="Check Processing Flags">
+    Verify processing is enabled in `.panrc`:
+    
+    ```python
+    DNS_PROCESSING = True  # Should be True
+    IOT_PROCESSING = False  # True if you want IoT processing
+    ```
+  </Step>
+  
+  <Step title="Check for Unprocessed Events">
+    Query Elasticsearch for pending events:
+    
+    ```bash
+    curl -X GET "localhost:9200/threat-*/_count?pretty" \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "query": {
+          "bool": {
+            "must": [
+              { "match": { "tags": "DNS" }},
+              { "match": { "SFN.processed": 0 }}
+            ]
+          }
+        }
+      }'
+    ```
+    
+    If count is 0, there are no events to process. If count > 0, processing should be active.
+  </Step>
+</Steps>
+
+### Solutions
+
+<AccordionGroup>
+  <Accordion title="Restart SafeNetworking" icon="rotate">
+    Sometimes a simple restart resolves the issue:
+    
+    ```bash
+    # If running directly
+    pkill -f "sfn start"
+    sfn start
+    
+    # If running as a service
+    sudo systemctl restart safenetworking
+    ```
+  </Accordion>
+  
+  <Accordion title="Wait for AutoFocus Points Reset" icon="clock">
+    If processing stopped due to point exhaustion (below 500), wait for the daily reset:
+    
+    - AutoFocus points reset at **midnight UTC**
+    - Processing resumes automatically when points refresh
+    - Check current time vs. reset time
+    
+    To manually verify:
+    ```bash
+    curl -X GET "localhost:9200/sfn-details/_doc/af-details?pretty" | grep daily_bucket_start
+    ```
+  </Accordion>
+  
+  <Accordion title="Check Thread Health" icon="gears">
+    Background threads may have crashed. Check for thread-related errors:
+    
+    ```bash
+    grep -i "thread" log/sfn.log | tail -20
+    grep -i "exception" log/sfn.log | tail -20
+    ```
+    
+    If threads crashed, restart SafeNetworking.
+  </Accordion>
+  
+  <Accordion title="Verify Elasticsearch Connectivity" icon="database">
+    Processing can stall if Elasticsearch connectivity is intermittent:
+    
+    ```bash
+    # Check cluster health
+    curl -X GET "localhost:9200/_cluster/health?pretty"
+    
+    # Check index status
+    curl -X GET "localhost:9200/_cat/indices/threat-*?v"
+    ```
+    
+    Resolve any Elasticsearch issues found.
+  </Accordion>
+</AccordionGroup>
+
+### Recovery Procedure
+
+<Steps>
+  <Step title="Stop SafeNetworking">
+    ```bash
+    sudo systemctl stop safenetworking
+    # Or: pkill -f "sfn start"
+    ```
+  </Step>
+  
+  <Step title="Verify Prerequisites">
+    ```bash
+    # Elasticsearch running
+    sudo systemctl status elasticsearch
+    
+    # AutoFocus API key set
+    grep AUTOFOCUS_API_KEY .panrc
+    
+    # Adequate disk space
+    df -h
+    ```
+  </Step>
+  
+  <Step title="Clear Any Stale Locks">
+    If applicable, clear any application-level locks or state:
+    
+    ```bash
+    # This depends on your deployment
+    rm -f /tmp/sfn.lock
+    ```
+  </Step>
+  
+  <Step title="Start SafeNetworking">
+    ```bash
+    sudo systemctl start safenetworking
+    # Or: sfn start
+    ```
+  </Step>
+  
+  <Step title="Monitor Startup">
+    Watch logs for successful initialization:
+    
+    ```bash
+    tail -f log/sfn.log
+    ```
+    
+    Look for:
+    ```
+    [INFO] : SafeNetworking application initializing
+    [INFO] : ElasticSearch host is: localhost:9200
+    [INFO] : Background processes initialized
+    [INFO] : SafeNetworking server started @ localhost:5000
+    ```
+  </Step>
+  
+  <Step title="Verify Processing Resumes">
+    Check that events are being processed:
+    
+    ```bash
+    # Should see processing activity
+    tail -f log/sfn.log | grep "Processing"
+    ```
+  </Step>
+</Steps>
+
+## Debug Mode Configuration
+
+Enable debug mode for detailed troubleshooting information.
+
+### Enable Debug Mode
+
+Edit `.panrc`:
+
+```python
+# Enable debug logging
+LOG_LEVEL = "DEBUG"
+
+# Process one event at a time for detailed tracking
+DEBUG_MODE = True
+
+# Enable Flask debug mode (shows debug on console)
+DEBUG = True
+```
+
+<Warning>
+**DEBUG_MODE = True** significantly slows processing by handling events sequentially. Use only for troubleshooting.
+
+Location: `project/dns/runner.py:88`
+</Warning>
+
+### What Debug Mode Does
+
+<Tabs>
+  <Tab title="Normal Mode">
+    - Processes multiple events in parallel using thread pools
+    - Pool size determined by `DNS_POOL_COUNT`
+    - Logs are concise (INFO level)
+    - High throughput
+    
+    ```python
+    multiProcNum = app.config['DNS_POOL_COUNT']  # e.g., 16
+    with Pool(multiProcNum) as pool:
+        results = pool.map(searchDomain, priDocIds)
+    ```
+  </Tab>
+  
+  <Tab title="Debug Mode">
+    - Processes one event at a time sequentially
+    - Detailed logs for every step (DEBUG level)
+    - Easy to trace individual event processing
+    - Low throughput
+    
+    ```python
+    for event in priDocIds:
+        results = searchDomain(event)
+        app.logger.debug(f"Results: {results}")
+    ```
+  </Tab>
+</Tabs>
+
+### Debug Mode Output
+
+With debug mode enabled, you'll see detailed logs like:
+
+```
+[DEBUG] : Gathering 1000 THREAT events from ElasticSearch
+[DEBUG] : Calling getDomainDoc() for example.com
+[DEBUG] : Querying local cache for example.com
+[DEBUG] : Domain last updated can't be older than 2026-02-02T10:15:32
+[DEBUG] : Gathering domain info for example.com (10 API-points)
+[DEBUG] : Initial AF domain query returned {cookie: abc123}
+[DEBUG] : Cookie abc123 returned for query of example.com
+[DEBUG] : Checking cookie abc123 (2 API-points)
+[DEBUG] : Search completion 20% for example.com at 1 minute(s)
+[DEBUG] : Calling processTagList({hit data})
+[DEBUG] : Found tag(s) ['ELFMirai', 'Coinminer'] in sample
+[DEBUG] : Processing tag ELFMirai
+[DEBUG] : Calling assessTags({domain tag data})
+[DEBUG] : Working on tag ELFMirai with class of malware_family
+[DEBUG] : Calculating confidence level: Day differential of 45
+[DEBUG] : confidence_level for ELFMirai @ date 2026-01-18T10:00:00: 70 based on age of 45 days
+[DEBUG] : Saved event doc with the following data: {event data}
+[DEBUG] : abc123 save: SUCCESS
+```
+
+### Disable Debug Mode
+
+After troubleshooting, disable debug mode for normal performance:
+
+```python
+# Edit .panrc
+LOG_LEVEL = "INFO"
+DEBUG_MODE = False
+DEBUG = False
+```
+
+Restart SafeNetworking for changes to take effect.
+
+## Check System Health
+
+Comprehensive system health check procedure.
+
+### Quick Health Check Script
+
+```bash
+#!/bin/bash
+
+echo "=== SafeNetworking Health Check ==="
+echo
+
+# Check if SafeNetworking is running
+echo "[1] SafeNetworking Process:"
+if pgrep -f "sfn start" > /dev/null; then
+    echo "✓ Running"
+    ps aux | grep "sfn start" | grep -v grep
+else
+    echo "✗ Not running"
+fi
+echo
+
+# Check Elasticsearch
+echo "[2] Elasticsearch:"
+if curl -s "localhost:9200" > /dev/null 2>&1; then
+    echo "✓ Accessible"
+    curl -s "localhost:9200/_cluster/health?pretty" | grep -E '"cluster_name"|"status"'
+else
+    echo "✗ Not accessible"
+fi
+echo
+
+# Check AutoFocus points
+echo "[3] AutoFocus Points:"
+if curl -s "localhost:9200/sfn-details/_doc/af-details" > /dev/null 2>&1; then
+    POINTS=$(curl -s "localhost:9200/sfn-details/_doc/af-details" | 
+             python3 -c "import sys, json; print(json.load(sys.stdin)['_source']['daily_points_remaining'])")
+    echo "✓ Daily points remaining: $POINTS"
+    if [ "$POINTS" -lt 500 ]; then
+        echo "⚠ WARNING: Points below critical threshold (500)"
+    elif [ "$POINTS" -lt 5000 ]; then
+        echo "⚠ WARNING: Points below low threshold (5000)"
+    fi
+else
+    echo "✗ Cannot retrieve point information"
+fi
+echo
+
+# Check unprocessed events
+echo "[4] Unprocessed Events:"
+if curl -s "localhost:9200/threat-*/_count" > /dev/null 2>&1; then
+    UNPROCESSED=$(curl -s "localhost:9200/threat-*/_count" -H 'Content-Type: application/json' -d '{
+      "query": {
+        "bool": {
+          "must": [
+            {"match": {"tags": "DNS"}},
+            {"match": {"SFN.processed": 0}}
+          ]
+        }
+      }
+    }' | python3 -c "import sys, json; print(json.load(sys.stdin)['count'])")
+    echo "Unprocessed DNS events: $UNPROCESSED"
+else
+    echo "✗ Cannot query events"
+fi
+echo
+
+# Check recent errors in logs
+echo "[5] Recent Errors (last 10):"
+if [ -f "log/sfn.log" ]; then
+    ERROR_COUNT=$(grep -E "ERROR|CRITICAL" log/sfn.log | wc -l)
+    echo "Total errors in log: $ERROR_COUNT"
+    grep -E "ERROR|CRITICAL" log/sfn.log | tail -10
+else
+    echo "✗ Log file not found"
+fi
+echo
+
+# Check disk space
+echo "[6] Disk Space:"
+df -h | grep -E 'Filesystem|/$'
+echo
+
+echo "=== Health Check Complete ==="
+```
+
+Save as `health_check.sh`, make executable, and run:
+
+```bash
+chmod +x health_check.sh
+./health_check.sh
+```
+
+### Component Status Checklist
+
+<Accordion title="System Requirements" icon="server">
+  **Operating System:**
+  - [ ] Linux distribution (Ubuntu, CentOS, RHEL)
+  - [ ] Adequate CPU (multi-core recommended)
+  - [ ] Sufficient RAM (4GB+ recommended)
+  - [ ] Disk space for logs and Elasticsearch data
+  
+  **Check:**
+  ```bash
+  uname -a
+  free -h
+  df -h
+  ```
+</Accordion>
+
+<Accordion title="SafeNetworking Application" icon="shield-check">
+  - [ ] Process running
+  - [ ] Flask server responding on configured port
+  - [ ] Background threads active (DNS, IoT, AF points)
+  - [ ] No CRITICAL or ERROR messages in recent logs
+  - [ ] Configuration file (.panrc) present and valid
+  
+  **Check:**
+  ```bash
+  ps aux | grep sfn
+  curl http://localhost:5000/
+  tail -50 log/sfn.log
+  ```
+</Accordion>
+
+<Accordion title="Elasticsearch" icon="database">
+  - [ ] Elasticsearch service running
+  - [ ] Cluster status green or yellow
+  - [ ] All required indices present
+  - [ ] No red or unallocated shards
+  - [ ] Adequate disk space
+  
+  **Check:**
+  ```bash
+  curl localhost:9200/_cluster/health?pretty
+  curl localhost:9200/_cat/indices?v
+  curl localhost:9200/_cat/shards?v | grep -E "UNASSIGNED|FAILED"
+  ```
+</Accordion>
+
+<Accordion title="AutoFocus API" icon="cloud">
+  - [ ] API key configured in .panrc
+  - [ ] Daily points remaining > 500
+  - [ ] Minute points not consistently exceeded
+  - [ ] Queries returning results
+  - [ ] Reasonable response times
+  
+  **Check:**
+  ```bash
+  curl -X POST "https://autofocus.paloaltonetworks.com/api/v1.0/tag/WildFireTest" \
+    -H "Content-Type: application/json" \
+    -d '{"apiKey": "your-key-here"}'
+  
+  curl localhost:9200/sfn-details/_doc/af-details?pretty
+  ```
+</Accordion>
+
+<Accordion title="Event Processing" icon="gears">
+  - [ ] Events being retrieved from Elasticsearch
+  - [ ] Domain lookups succeeding
+  - [ ] Tags being assessed and applied
+  - [ ] Events marked as processed (SFN.processed = 1)
+  - [ ] Reasonable processing rate
+  
+  **Check:**
+  ```bash
+  grep "Processing" log/sfn.log | tail -10
+  grep "save: SUCCESS" log/sfn.log | tail -10
+  grep "save: FAIL" log/sfn.log | tail -10
+  ```
+</Accordion>
+
+## Common Error Messages
+
+### Quick Reference
+
+| Error Message | Severity | Likely Cause | Solution |
+|---------------|----------|--------------|----------|
+| `API Key for Autofocus is not set` | CRITICAL | Missing API key | Add `AUTOFOCUS_API_KEY` to `.panrc` |
+| `Connection refused` | ERROR | Elasticsearch down | Start Elasticsearch service |
+| `Connection timeout` | ERROR | Network/ES slow | Check ES health and network |
+| `Daily Bucket Exceeded` | WARNING | AF points exhausted | Wait for reset or adjust thresholds |
+| `Minute Bucket Exceeded` | WARNING | Too many parallel requests | Reduce `DNS_POOL_COUNT` |
+| `Unable to work with event doc` | ERROR | ES or processing issue | Check ES connectivity and event structure |
+| `Transport Error` | ERROR | ES communication failure | Restart ES or check network |
+| `No local cache found` | INFO | Normal, creating cache | No action needed |
+| `No samples found for domain` | INFO | AF query returned no results | Normal for some domains |
+| `Slowing down execution` | INFO | Low AF points | Normal protection, wait for reset |
+
+## Getting Additional Help
+
+<CardGroup cols={2}>
+  <Card title="Enable Debug Logging" icon="bug">
+    Set `LOG_LEVEL = "DEBUG"` in `.panrc` and review detailed logs for more context about errors.
+  </Card>
+  
+  <Card title="Check Documentation" icon="book">
+    Review the monitoring guide for normal operational indicators and metrics to compare against.
+  </Card>
+  
+  <Card title="Elasticsearch Documentation" icon="database">
+    Consult Elasticsearch documentation for cluster and index management issues.
+  </Card>
+  
+  <Card title="AutoFocus Support" icon="headset">
+    Contact Palo Alto Networks support for AutoFocus API issues or rate limit increases.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Monitoring" icon="chart-mixed" href="/operations/monitoring">
+    Set up monitoring to catch issues before they impact operations
+  </Card>
+  <Card title="Running SafeNetworking" icon="play" href="/operations/running-safenetworking">
+    Review configuration options to optimize performance
+  </Card>
+</CardGroup>

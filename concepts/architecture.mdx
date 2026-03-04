@@ -1,0 +1,251 @@
+---
+title: 'Architecture'
+description: 'System architecture and component interaction in SafeNetworking'
+---
+
+## Overview
+
+SafeNetworking is a threat intelligence platform built on Flask that enriches Palo Alto Networks firewall logs with malware intelligence from AutoFocus. The system operates as a multi-threaded application that continuously processes threat events from Elasticsearch, enriches them with AutoFocus data, and stores the results back to Elasticsearch for visualization in Kibana.
+
+## System Components
+
+### Core Application Stack
+
+<CardGroup cols={2}>
+  <Card title="Flask Application" icon="flask">
+    Python web framework serving the UI and managing background processing threads
+  </Card>
+  <Card title="Elasticsearch" icon="database">
+    Document store for threat events, domain cache, IoT data, and tag metadata
+  </Card>
+  <Card title="Logstash" icon="filter">
+    Ingests syslog from PAN firewalls and forwards events to Elasticsearch
+  </Card>
+  <Card title="Kibana" icon="chart-line">
+    Visualization and dashboard interface for enriched threat intelligence
+  </Card>
+</CardGroup>
+
+### External Integration
+
+**AutoFocus API** - Palo Alto Networks threat intelligence service providing:
+- Domain reputation and malware sample data
+- Tag classification (malware families, actors, campaigns)
+- Rate-limited API with daily and per-minute point quotas
+
+**IoT Honeypot Database** - External threat intelligence feed for IoT device attacks
+
+## Architecture Diagram
+
+```
+┌─────────────────┐
+│  PAN Firewall   │
+│   (Syslog)      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│    Logstash     │
+│  (Port 5514)    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────┐
+│           Elasticsearch Indices                  │
+│  • threat-* (firewall events)                   │
+│  • sfn-domain-details (domain cache)            │
+│  • sfn-iot-details (IoT threat cache)           │
+│  • sfn-tag-details (tag metadata cache)         │
+│  • af-details (AutoFocus API quotas)            │
+└────────┬────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────┐
+│         SafeNetworking (Flask App)              │
+│                                                  │
+│  ┌──────────────────────────────────────────┐  │
+│  │  Background Processing Threads           │  │
+│  │  ┌────────────┐  ┌─────────────┐        │  │
+│  │  │ DNS Thread │  │ IoT Thread  │        │  │
+│  │  │ (5 sec)    │  │ (600 sec)   │        │  │
+│  │  └─────┬──────┘  └──────┬──────┘        │  │
+│  │        │                │                │  │
+│  │        │  ┌─────────────┴──────────┐    │  │
+│  │        └─▶│  AutoFocus API         │    │  │
+│  │           │  Point Manager Thread  │    │  │
+│  │           │  (600 sec)             │    │  │
+│  │           └────────────────────────┘    │  │
+│  └──────────────────────────────────────────┘  │
+│                                                  │
+│  ┌──────────────────────────────────────────┐  │
+│  │  Multi-Process Event Enrichment          │  │
+│  │  • Up to 16 parallel workers             │  │
+│  │  • Domain lookups & tag assessment       │  │
+│  │  • Confidence scoring                    │  │
+│  └──────────────────────────────────────────┘  │
+└────────┬─────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐         ┌──────────────────┐
+│   Kibana UI     │◀────────│  AutoFocus API   │
+│  (Port 5601)    │         │  (External)      │
+└─────────────────┘         └──────────────────┘
+```
+
+## Data Flow
+
+### Event Ingestion Pipeline
+
+<Steps>
+  <Step title="Firewall Detection">
+    PAN firewall detects DNS query to malicious domain or IoT threat activity
+  </Step>
+  <Step title="Syslog Forwarding">
+    Firewall sends syslog message to Logstash listener (port 5514)
+  </Step>
+  <Step title="Logstash Processing">
+    Logstash parses syslog, extracts fields, tags event type (DNS, URL, IoT), and forwards to Elasticsearch
+  </Step>
+  <Step title="Event Indexing">
+    Event stored in Elasticsearch `threat-*` index with `SFN.processed=0` flag
+  </Step>
+</Steps>
+
+### Background Processing Model
+
+SafeNetworking runs continuous background threads initialized in `sfn:102-161`:
+
+#### DNS Processing Thread
+```python
+# Runs every DNS_POOL_TIME seconds (default: 5 seconds)
+def runDNS():
+    while app.config["DNS_PROCESSING"] == True:
+        processDNS()
+        time.sleep(app.config["DNS_POOL_TIME"])
+```
+
+**Process Flow:**
+1. Query Elasticsearch for unprocessed DNS events (`SFN.processed=0`)
+2. Retrieve up to `DNS_EVENT_QUERY_SIZE` (default: 1000) events
+3. Classify events as primary (cached domain) or secondary (needs lookup)
+4. Process in parallel using multiprocessing pool (`DNS_POOL_COUNT` workers, max 16)
+5. Update events with enrichment data and set `SFN.processed=1`
+
+See: `project/dns/runner.py:75-128`
+
+#### IoT Processing Thread
+```python
+# Runs every IOT_POOL_TIME seconds (default: 600 seconds)
+def runIoT():
+    while app.config["IOT_PROCESSING"] == True:
+        processIoT()
+        time.sleep(app.config["IOT_POOL_TIME"])
+```
+
+**Process Flow:**
+1. Calculate time delta since last update to IoT database
+2. Query external IoT Honeypot API for new malicious IPs
+3. Normalize family names and tag classifications
+4. Update `sfn-iot-details` index with new threat intelligence
+
+See: `project/iot/runner.py:136-171`
+
+#### AutoFocus Points Monitoring Thread
+```python
+# Runs every AF_POOL_TIME seconds (default: 600 seconds)
+def runAfPoints():
+    while True:
+        updateAfStats()
+        time.sleep(app.config["AF_POOL_TIME"])
+```
+
+**Purpose:** Tracks AutoFocus API quota usage to prevent exhaustion
+- **Daily points**: Total daily API call budget
+- **Minute points**: Per-minute rate limit (max 16 concurrent calls)
+- Automatically throttles processing when quotas approach limits
+
+See: `project/dns/dnsutils.py:15-57`
+
+## Multi-Processing Architecture
+
+SafeNetworking uses Python's `multiprocessing.dummy.Pool` for parallelization:
+
+```python
+# Cap at 16 to stay within AutoFocus minute point limits
+multiProcNum = min(app.config['DNS_POOL_COUNT'], 16)
+
+with Pool(multiProcNum) as pool:
+    results = pool.map(searchDomain, priDocIds)
+```
+
+From `project/dns/runner.py:92-97`
+
+<Warning>
+**AutoFocus Rate Limiting**: The total of `DNS_POOL_COUNT + URL_POOL_COUNT` must not exceed 16 to avoid exceeding AutoFocus per-minute point limits. The application validates this at startup.
+</Warning>
+
+## Configuration Management
+
+Configuration is managed through a layered approach:
+
+1. **Default Settings**: Defined in `project/__init__.py:36-191`
+2. **Instance Overrides**: `.panrc` file in base directory (`project/__init__.py:194`)
+3. **Runtime Flags**: Dynamic adjustments (e.g., `AF_POINTS_MODE`)
+
+### Key Configuration Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DNS_POOL_TIME` | 5 | Seconds between DNS processing cycles |
+| `DNS_POOL_COUNT` | 16 | Number of parallel DNS workers |
+| `DNS_EVENT_QUERY_SIZE` | 1000 | Events to process per cycle |
+| `IOT_POOL_TIME` | 600 | Seconds between IoT updates |
+| `AF_POOL_TIME` | 600 | Seconds between AF point checks |
+| `AF_POINTS_LOW` | 5000 | Threshold to slow processing |
+| `AF_POINT_NOEXEC` | 500 | Threshold to halt processing |
+| `DNS_DOMAIN_INFO_MAX_AGE` | 30 days | Domain cache TTL |
+| `DOMAIN_TAG_INFO_MAX_AGE` | 120 days | Tag cache TTL |
+
+## Scalability Considerations
+
+### Performance Tuning
+
+**Parallel Processing**: Adjust `DNS_POOL_COUNT` based on:
+- Available AutoFocus API points
+- Elasticsearch cluster capacity
+- System resources (CPU, memory)
+
+**Cache Strategy**: Domain and tag information is cached in Elasticsearch to minimize AutoFocus API calls:
+- Domain cache: 30 days (configurable)
+- Tag cache: 120 days (configurable)
+- Cache reduces API costs and improves response time
+
+**Adaptive Throttling**: System automatically adjusts processing speed based on AutoFocus quota:
+- **Normal mode**: Multi-threaded processing at full speed
+- **Low points mode** (`< AF_POINTS_LOW`): Single-threaded processing
+- **No-exec mode** (`< AF_POINT_NOEXEC`): Processing halts until quota resets
+
+See: `project/dns/dnsutils.py:59-105`
+
+## High Availability
+
+For production deployments:
+
+<Tip>
+- Run Elasticsearch as a clustered service (3+ nodes)
+- Use Elasticsearch connection pooling (`elasticsearch_dsl.connections`)
+- Configure Logstash with persistent queues
+- Monitor AutoFocus quota usage via `af-details` index
+- Implement log rotation (configured via `LOG_SIZE` and `LOG_BACKUPS`)
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Data Model" icon="diagram-project" href="/concepts/data-model">
+    Explore Elasticsearch document schemas and field definitions
+  </Card>
+  <Card title="Event Processing" icon="gears" href="/concepts/event-processing">
+    Learn about enrichment workflows and confidence scoring
+  </Card>
+</CardGroup>

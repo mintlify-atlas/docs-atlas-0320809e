@@ -1,0 +1,386 @@
+---
+title: 'Firewall Configuration'
+description: 'Configure Palo Alto Networks firewalls to send syslog events to SafeNetworking'
+icon: 'shield'
+---
+
+## Overview
+
+SafeNetworking receives THREAT, TRAFFIC, GTP, and SCTP syslog events from Palo Alto Networks Next-Generation Firewalls (NGFWs). This guide covers the configuration required on your firewall to send logs to SafeNetworking for processing and threat intelligence enrichment.
+
+<Info>
+  SafeNetworking uses the Palo Alto Networks Threat Intelligence Cloud to correlate threat logs (primarily DNS queries) with known malware.
+</Info>
+
+## Prerequisites
+
+- Palo Alto Networks NGFW running PAN-OS 8.x or 9.x
+- Network connectivity from firewall to SafeNetworking host
+- SafeNetworking installed and running
+
+## Required Log Types
+
+SafeNetworking processes the following log types:
+
+<CardGroup cols={2}>
+  <Card title="THREAT Logs" icon="bug">
+    DNS queries, spyware, vulnerability, and wildfire events
+  </Card>
+  <Card title="TRAFFIC Logs" icon="network-wired">
+    Network traffic flows and connections (optional)
+  </Card>
+  <Card title="GTP Logs" icon="tower-cell">
+    Mobile carrier GTP tunnel events
+  </Card>
+  <Card title="SCTP Logs" icon="diagram-project">
+    SCTP association and signaling events
+  </Card>
+</CardGroup>
+
+## Syslog Server Ports
+
+Configure your firewall to send logs to the SafeNetworking host on the following UDP ports:
+
+| Log Type | UDP Port | Pipeline | Description |
+|----------|----------|----------|-------------|
+| THREAT/TRAFFIC/SYSTEM/CONFIG | 5514 | threat | Main threat and traffic logs |
+| GTP/SCTP | 5516 | gtp | Mobile carrier logs |
+| IoT External | 5510 | iot | External IoT device alerts |
+
+<Warning>
+  Ensure these UDP ports are allowed through any intermediate firewalls between your NGFW and the SafeNetworking host.
+</Warning>
+
+## Syslog Configuration
+
+### Step 1: Create Syslog Server Profile
+
+1. Navigate to **Device > Server Profiles > Syslog**
+2. Click **Add** to create a new profile
+3. Enter a name (e.g., `SafeNetworking-Threat`)
+4. Add a server:
+   - **Name**: `SafeNetworking-Primary`
+   - **Syslog Server**: IP address of SafeNetworking host
+   - **Transport**: UDP
+   - **Port**: 5514 (for THREAT/TRAFFIC logs)
+   - **Format**: BSD (default)
+   - **Facility**: LOG_USER (default)
+
+<CodeGroup>
+```xml CLI Example - Threat Logs
+set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Primary server 192.168.1.100
+set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Primary transport UDP
+set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Primary port 5514
+set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Primary format BSD
+set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Primary facility LOG_USER
+```
+
+```xml CLI Example - GTP Logs
+set shared log-settings syslog SafeNetworking-GTP server SafeNetworking-Primary server 192.168.1.100
+set shared log-settings syslog SafeNetworking-GTP server SafeNetworking-Primary transport UDP
+set shared log-settings syslog SafeNetworking-GTP server SafeNetworking-Primary port 5516
+set shared log-settings syslog SafeNetworking-GTP server SafeNetworking-Primary format BSD
+set shared log-settings syslog SafeNetworking-GTP server SafeNetworking-Primary facility LOG_USER
+```
+</CodeGroup>
+
+### Step 2: Create Log Forwarding Profile
+
+1. Navigate to **Objects > Log Forwarding**
+2. Click **Add** to create a new profile
+3. Enter a name (e.g., `SafeNetworking-Forwarding`)
+4. Add log types:
+
+#### THREAT Logs
+- Click **Add** under Threat
+- **Name**: `Threat-to-SafeNetworking`
+- **Filter**: All threat severities
+- **Syslog Profile**: Select `SafeNetworking-Threat`
+- Enable **Send to Syslog**
+
+#### TRAFFIC Logs (Optional)
+<Note>
+  As of SafeNetworking v4.0, TRAFFIC logging is disabled by default. Enable only if specifically needed.
+</Note>
+
+- Click **Add** under Traffic
+- **Name**: `Traffic-to-SafeNetworking`
+- **Log Type**: End (session end)
+- **Syslog Profile**: Select `SafeNetworking-Threat`
+- Enable **Send to Syslog**
+
+#### GTP Logs
+- Click **Add** under GTP
+- **Name**: `GTP-to-SafeNetworking`
+- **Syslog Profile**: Select `SafeNetworking-GTP`
+- Enable **Send to Syslog**
+
+### Step 3: Apply to Security Policies
+
+Attach the log forwarding profile to your security policies:
+
+1. Navigate to **Policies > Security**
+2. Edit the policies where you want threat logging
+3. Under **Actions** tab:
+   - **Log Setting**: Select `SafeNetworking-Forwarding`
+   - Enable **Log at Session End**
+4. Click **OK** and commit changes
+
+<CodeGroup>
+```xml CLI Example
+set rulebase security rules "Internet-Access" log-setting SafeNetworking-Forwarding
+set rulebase security rules "Internet-Access" log-end yes
+```
+</CodeGroup>
+
+## DNS Threat Configuration
+
+For SafeNetworking to properly correlate DNS threats, configure your Anti-Spyware profiles:
+
+### Anti-Spyware Profile Settings
+
+1. Navigate to **Objects > Security Profiles > Anti-Spyware**
+2. Select or create a profile
+3. Configure DNS Security:
+   - Enable **DNS Security**
+   - Action: Alert or Block (based on your security policy)
+   - Enable logging for DNS categories
+
+<Warning>
+  If using PCAP capture on DNS sinkhole events, ensure your Logstash pipeline can handle the additional payload size.
+</Warning>
+
+### DNS Sinkhole Configuration
+
+DNS sinkhole allows you to redirect malicious domain queries:
+
+1. Navigate to **Objects > Security Profiles > Anti-Spyware**
+2. Edit your Anti-Spyware profile
+3. Under **DNS Signatures**:
+   - **Sinkhole**: Enable
+   - **IPv4 Address**: Configure sinkhole IP (e.g., 72.5.65.111)
+   - **IPv6 Address**: Configure if using IPv6
+4. Ensure **Log** is enabled for DNS categories
+
+<CodeGroup>
+```xml CLI Example
+set profiles spyware "SafeNetworking-AntiSpyware" botnet-domains sinkhole ipv4-address 72.5.65.111
+set profiles spyware "SafeNetworking-AntiSpyware" botnet-domains sinkhole ipv6-address ::1
+set profiles spyware "SafeNetworking-AntiSpyware" botnet-domains dns-security-categories action sinkhole
+set profiles spyware "SafeNetworking-AntiSpyware" botnet-domains dns-security-categories log-level default
+```
+</CodeGroup>
+
+## Log Format and Field Mapping
+
+SafeNetworking expects standard PAN-OS syslog format. The Logstash pipeline parses CSV-formatted logs based on PAN-OS field order.
+
+### THREAT Log Format
+
+The threat.conf pipeline parses THREAT logs with the following key fields:
+
+```csv
+Domain,ReceiveTime,SerialNumber,Type,Threat_ContentType,Config Version,
+GeneratedTime,SourceIP,DestinationIP,NATSourceIP,NATDestinationIP,RuleName,
+SourceUser,DestinationUser,Application,VirtualSystem,SourceZone,DestinationZone,
+...,ThreatID,Category,Severity,Direction,...,ThreatCategory,ContentVersion,...
+```
+
+<Accordion title="View Complete Field List">
+  The complete field list includes 68+ fields as documented in the [PAN-OS 9.0 Threat Log Fields](https://docs.paloaltonetworks.com/pan-os/9-0/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/threat-log-fields.html) reference.
+
+  Key fields processed by SafeNetworking:
+  - **ThreatID**: Signature identifier
+  - **ThreatCategory**: dns, dns-cloud, dns-security, url, etc.
+  - **URL_Filename**: Contains domain name for DNS queries
+  - **Category**: Threat category
+  - **Severity**: Critical, High, Medium, Low, Informational
+</Accordion>
+
+### DNS Event Processing
+
+SafeNetworking automatically categorizes DNS threats:
+
+<Steps>
+  <Step title="EDL-based DNS Events">
+    Threat ID `12000000` (Suspicious Domain) - Tagged as `SFN-EDL`
+  </Step>
+  <Step title="Cloud DNS Events">
+    `dns-cloud` or `dns-security` categories - Tagged as `SFN-CLOUD`
+  </Step>
+  <Step title="Content-based DNS Events">
+    Traditional DNS signatures - Tagged as `SFN-CONTENT`
+  </Step>
+</Steps>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Log Filtering">
+    **Filter by Severity**: Consider filtering logs to reduce volume:
+    - Production: Log Critical, High, Medium severity
+    - Testing: Log all severities including Informational
+    
+    **Filter by Zone**: Focus on critical zones:
+    - Untrust to Trust (Internet to DMZ/Internal)
+    - DMZ to Trust
+    - Skip Trust to Trust for reduced volume
+  </Accordion>
+
+  <Accordion title="Performance Tuning">
+    **Syslog Rate Limiting**: Configure appropriate rate limits:
+    ```xml
+    set system setting logging rate-limit 100000
+    ```
+    
+    **Selective Policy Logging**: Enable logging only on policies that matter:
+    - Internet access policies
+    - External-facing services
+    - High-risk zones
+  </Accordion>
+
+  <Accordion title="High Availability">
+    **Redundant Syslog Servers**: Add backup server:
+    ```xml
+    set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Backup server 192.168.1.101
+    set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Backup transport UDP
+    set shared log-settings syslog SafeNetworking-Threat server SafeNetworking-Backup port 5514
+    ```
+  </Accordion>
+
+  <Accordion title="DNS Resolution">
+    **Avoid Recursion**: The SafeNetworking host should NOT be behind a firewall that will generate threat logs for DNS resolution of malicious domains, as this creates recursive logging.
+    
+    The threat.conf pipeline includes commented-out DNS resolution options:
+    ```ruby
+    # Uncomment only if SafeNetworking is not behind threat detection
+    #mutate {
+    #  copy => { "[SFN][domain_name]" => "[SFN][resolved_ip]"}
+    #}
+    #dns {
+    #  resolve => [ "[SFN][resolved_ip]" ]
+    #  action => "replace"
+    #}
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Verification
+
+After configuration, verify logs are being received:
+
+<Steps>
+  <Step title="Test Connectivity">
+    From the firewall CLI:
+    ```bash
+    test log-forwarding
+    ```
+  </Step>
+  
+  <Step title="Check Logstash">
+    On SafeNetworking host:
+    ```bash
+    sudo tail -f /var/log/logstash/logstash-plain.log
+    ```
+  </Step>
+  
+  <Step title="Verify Elasticsearch">
+    Check if indices are being created:
+    ```bash
+    curl -X GET "localhost:9200/_cat/indices?v&s=index"
+    ```
+    
+    You should see indices like:
+    - `threat-2026.03`
+    - `gtp-2026.03`
+    - `system-2026.03`
+  </Step>
+  
+  <Step title="Query Recent Events">
+    Search for recent threat events in Kibana or via API:
+    ```json
+    GET threat-*/_search
+    {
+      "size": 5,
+      "query": { "match_all": {} },
+      "sort": [{ "@timestamp": { "order": "desc" }}]
+    }
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No logs appearing in SafeNetworking">
+    **Check network connectivity**:
+    ```bash
+    # From firewall
+    ping <safenetworking-ip>
+    
+    # Test UDP port
+    nc -u <safenetworking-ip> 5514
+    ```
+    
+    **Verify firewall logging**:
+    ```bash
+    > show logging-status
+    ```
+    
+    **Check SafeNetworking firewall**:
+    ```bash
+    sudo ufw status
+    sudo ufw allow 5514/udp
+    sudo ufw allow 5516/udp
+    ```
+  </Accordion>
+  
+  <Accordion title="Logs received but not parsed">
+    **Check Logstash pipeline**:
+    ```bash
+    sudo systemctl status logstash
+    tail -f /var/log/logstash/logstash-plain.log
+    ```
+    
+    **Review failed events**:
+    ```bash
+    cat /var/log/logstash/failed_threat_events-*.log
+    ```
+    
+    **Verify PAN-OS version compatibility**: SafeNetworking v4.0 supports PAN-OS 8.x and 9.x field formats.
+  </Accordion>
+  
+  <Accordion title="Missing DNS threat correlation">
+    **Verify ThreatCategory field**: Should contain "dns", "dns-cloud", or "dns-security"
+    
+    **Check Anti-Spyware profile**: Ensure DNS Security is enabled and logging
+    
+    **Review SFN tags in Elasticsearch**:
+    ```json
+    GET threat-*/_search
+    {
+      "query": {
+        "terms": { "tags": ["SFN-DNS", "SFN-CLOUD", "SFN-EDL"] }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Kibana Dashboards" icon="chart-line" href="/integration/kibana-dashboards">
+    Explore pre-configured dashboards and visualizations
+  </Card>
+  <Card title="Operations Guide" icon="magnifying-glass" href="/operations/running-safenetworking">
+    Learn how to operate and manage SafeNetworking
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [PAN-OS 9.0 Syslog Field Descriptions](https://docs.paloaltonetworks.com/pan-os/9-0/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions)
+- [Threat Log Fields](https://docs.paloaltonetworks.com/pan-os/9-0/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/threat-log-fields.html)
+- [Traffic Log Fields](https://docs.paloaltonetworks.com/pan-os/9-0/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/traffic-log-fields.html)
+- [GTP Log Fields](https://www.paloaltonetworks.com/documentation/80/pan-os/pan-os/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/gtp-log-fields)

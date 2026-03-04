@@ -1,0 +1,116 @@
+---
+title: 'sfn start'
+description: 'Start the SafeNetworking application and initialize background processes'
+---
+
+## Overview
+
+The `sfn start` command initializes and starts the SafeNetworking application, including all background processing threads for DNS monitoring, IoT threat detection, and AutoFocus integration.
+
+## Command Syntax
+
+```bash
+sfn start
+```
+
+## Description
+
+This command performs the following operations:
+
+1. **Initializes the Flask application** - Starts the web server for API access
+2. **Validates configuration** - Checks that required API keys are set (AutoFocus)
+3. **Starts background processors**:
+   - DNS event processing thread
+   - IoT honeypot data integration thread
+   - AutoFocus point tracking thread
+4. **Logs system configuration** - Records log level, ElasticSearch host, and port information
+
+## Prerequisites
+
+- AutoFocus API key must be configured in `.panrc` file
+- ElasticSearch must be accessible at the configured host and port
+- Total processor count (DNS_POOL_COUNT + URL_POOL_COUNT) must be ≤ 16 to comply with AutoFocus rate limits
+
+## Configuration
+
+The command reads from the following configuration values:
+
+<ParamField path="LOG_LEVEL" type="string">
+  Logging verbosity level for the application
+</ParamField>
+
+<ParamField path="ELASTICSEARCH_HOST" type="string">
+  Hostname or IP address of the ElasticSearch instance
+</ParamField>
+
+<ParamField path="ELASTICSEARCH_PORT" type="integer">
+  Port number for ElasticSearch connection
+</ParamField>
+
+<ParamField path="FLASK_HOST" type="string">
+  Host address for the Flask web server (default: localhost)
+</ParamField>
+
+<ParamField path="FLASK_PORT" type="integer">
+  Port number for the Flask web server
+</ParamField>
+
+<ParamField path="AUTOFOCUS_API_KEY" type="string">
+  Required API key for Palo Alto AutoFocus integration
+</ParamField>
+
+## Usage Example
+
+```bash
+# Start the SafeNetworking application
+sfn start
+```
+
+## Expected Output
+
+```
+INFO - SafeNetworking application initializing with log level of INFO
+INFO - ElasticSearch host is: localhost:9200
+INFO - INIT - Starting with total proc count of 12
+INFO - INIT - Initializing Background Processes
+INFO - INIT - Background processes initialized
+INFO - INIT - SafeNetworking server started @ 0.0.0.0:5000
+ * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+```
+
+## Background Processes
+
+When started, the application launches the following background threads:
+
+### DNS Processing Thread
+Searches for unprocessed `sfn-dns` documents in ElasticSearch, processes them with AutoFocus lookups, and enriches the data.
+
+### IoT Processing Thread
+Retrieves and integrates IoT Honeypot threat intelligence data, enriching incoming IoT events with known malicious IP and domain information.
+
+### AutoFocus Points Thread
+Periodically queries AutoFocus API to track remaining API points and ensure rate limits are not exceeded.
+
+## Error Conditions
+
+<Warning>
+  If the AutoFocus API key is not set or equals "NOT-SET", the application will log a CRITICAL error and exit immediately.
+</Warning>
+
+<Warning>
+  If the total processor count exceeds 16, a CRITICAL warning is logged. The application may not function correctly due to AutoFocus API rate limiting.
+</Warning>
+
+## Stopping the Application
+
+To stop the SafeNetworking application:
+
+```bash
+# Press CTRL+C in the terminal where sfn start is running
+```
+
+## Related Commands
+
+- [`sfn admin`](/cli/admin) - Administrative functions for data management
+- [`sfn iot`](/cli/iot) - Query IoT threat intelligence data
+- [`sfn load`](/cli/load) - Load CSV data into ElasticSearch

@@ -1,0 +1,460 @@
+---
+title: Monitoring SafeNetworking
+description: Monitor logs, metrics, and system health for SafeNetworking operations
+---
+
+## Log Files
+
+SafeNetworking writes all application logs to a rotating log file with detailed formatting for troubleshooting and monitoring.
+
+### Log File Location
+
+```bash
+log/sfn.log
+```
+
+The log file is located relative to the application base directory (one level up from the `project` directory).
+
+<Info>
+Log files are automatically rotated when they reach the configured size limit to prevent disk space issues.
+</Info>
+
+### Log Configuration
+
+Log behavior is configured in `.panrc` or uses defaults from `project/__init__.py:140-157`:
+
+```python
+# Log level for the application
+LOG_LEVEL = "DEBUG"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+# Size of log file before rotation (bytes)
+LOG_SIZE = 1000000000  # Default: 1GB
+
+# Number of rotated log files to keep
+LOG_BACKUPS = 10
+
+# Flask logging level (separate from application logs)
+FLASK_LOGGING_LEVEL = "ERROR"
+```
+
+### Log Format
+
+SafeNetworking uses a custom log formatter defined in `project/__init__.py:11-32`:
+
+```
+[LEVEL]    : YYYY-MM-DD HH:MM:SS : module:function:[line]:thread : message
+```
+
+**Example log entries:**
+
+```
+[INFO]     : 2026-03-04 10:15:32 : runner:processDNS:[116] : Processing 1000 THREAT events from ElasticSearch
+[DEBUG]    : 2026-03-04 10:15:33 : dnsutils:updateAfStats:[43] : Updating af-details with 45000 remaining points
+[WARNING]  : 2026-03-04 10:20:15 : dnsutils:getDomainInfo:[390] : We have exceeded the daily allotment of points for AutoFocus
+[ERROR]    : 2026-03-04 10:25:45 : runner:searchDomain:[201] : Unable to work with event doc abc123 - Connection timeout
+```
+
+Each log entry includes:
+- **Level**: Severity of the message
+- **Timestamp**: When the event occurred
+- **Module**: Python module that logged the message
+- **Function**: Function that logged the message  
+- **Line**: Line number in the source code
+- **Thread**: Thread ID for multi-threaded operations
+- **Message**: Descriptive log message
+
+## Log Levels
+
+<AccordionGroup>
+  <Accordion title="DEBUG" icon="bug">
+    Detailed diagnostic information for troubleshooting. Shows every processing step, API calls, and data transformations. Use for development and debugging issues.
+    
+    **Example messages:**
+    - `Processing new DNS events`
+    - `Calling getDomainDoc() for example.com`
+    - `AF query returned {data}`
+  </Accordion>
+  
+  <Accordion title="INFO" icon="circle-info">
+    Confirmation that things are working as expected. Shows major operational milestones without excessive detail. Recommended for production.
+    
+    **Example messages:**
+    - `SafeNetworking application initializing with log level of INFO`
+    - `Background processes initialized`
+    - `Successfully updated IoT DB`
+  </Accordion>
+  
+  <Accordion title="WARNING" icon="triangle-exclamation">
+    Indicates something unexpected happened, but the application continues to work. Requires attention but not immediate action.
+    
+    **Example messages:**
+    - `We have exceeded the daily allotment of points for AutoFocus - going into hibernation mode`
+    - `Slowing down execution because daily point total is 4500`
+  </Accordion>
+  
+  <Accordion title="ERROR" icon="circle-xmark">
+    A serious problem occurred that prevented a specific operation from completing. Individual events or requests may fail.
+    
+    **Example messages:**
+    - `Unable to work with event doc abc123 - Connection timeout`
+    - `Transport Error working with event456: Connection refused`
+    - `Unable to retrieve domain info from AutoFocus`
+  </Accordion>
+  
+  <Accordion title="CRITICAL" icon="octagon-exclamation">
+    A very serious error that may cause the application to stop. Immediate action required.
+    
+    **Example messages:**
+    - `API Key for Autofocus is not set in .panrc, exiting`
+    - `Application may not run correctly with proc count of 24 - you have been warned`
+  </Accordion>
+</AccordionGroup>
+
+### Changing Log Level
+
+Edit `.panrc` to change the log level:
+
+```python
+# For production - less verbose
+LOG_LEVEL = "INFO"
+
+# For troubleshooting - more verbose
+LOG_LEVEL = "DEBUG"
+
+# For critical issues only
+LOG_LEVEL = "ERROR"
+```
+
+<Warning>
+Restart SafeNetworking after changing the log level for changes to take effect.
+</Warning>
+
+## What to Monitor
+
+### AutoFocus Points Usage
+
+Monitor AutoFocus API point consumption to prevent processing slowdowns or halts.
+
+**Key metrics:**
+- Daily points remaining
+- Minute points remaining
+- Point consumption rate
+
+**Elasticsearch index:** `sfn-details`  
+**Document ID:** `af-details`
+
+**Monitor these fields:**
+```json
+{
+  "daily_points": 100000,
+  "daily_points_remaining": 45000,
+  "minute_points": 100,
+  "minute_points_remaining": 87,
+  "daily_bucket_start": "2026-03-04T00:00:00",
+  "minute_bucket_start": "2026-03-04T10:15:00"
+}
+```
+
+<Warning>
+**Threshold alerts:**
+- Daily points below 5,000: Processing slows to single-threaded mode
+- Daily points below 500: All processing stops until reset
+</Warning>
+
+**Log indicators:**
+```
+[INFO] : Slowing down execution because daily point total is 4500
+[WARNING] : We have exceeded the daily allotment of points for AutoFocus - going into hibernation mode
+```
+
+### Event Processing
+
+Monitor the rate and success of DNS event processing.
+
+**Key metrics:**
+- Number of events processed per cycle
+- Processing success rate
+- Queue depth (unprocessed events)
+
+**Elasticsearch indices:**
+- `threat-*`: DNS threat events being processed
+- `sfn-domain-details`: Cached domain threat intelligence
+- `sfn-tag-details`: Cached AutoFocus tag information
+
+**Query for unprocessed events:**
+```json
+GET threat-*/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "tags": "DNS" }},
+        { "match": { "SFN.processed": 0 }}
+      ]
+    }
+  }
+}
+```
+
+**Log indicators:**
+```
+[DEBUG] : Gathering 1000 THREAT events from ElasticSearch
+[DEBUG] : abc123 save: SUCCESS
+[ERROR] : abc123 save: FAIL
+```
+
+### IoT Database Updates
+
+Monitor IoT honeypot data synchronization (if enabled).
+
+**Key metrics:**
+- Last successful update timestamp
+- Number of new IoT threats added
+- External API availability
+
+**Elasticsearch index:** `sfn-iot-details`
+
+**Log indicators:**
+```
+[INFO] : Successfully updated IoT DB
+[INFO] : Update from IoT DB is empty, nothing to do, sleeping
+[ERROR] : Unable to update IoT DB
+[ERROR] : Trying to query IoT HoneyPot DB resulted in error Connection refused
+```
+
+### Elasticsearch Health
+
+Monitor connectivity and health of the Elasticsearch cluster.
+
+**Check cluster health:**
+```bash
+curl -X GET "localhost:9200/_cluster/health?pretty"
+```
+
+**Expected response:**
+```json
+{
+  "cluster_name": "elasticsearch",
+  "status": "green",
+  "number_of_nodes": 1,
+  "active_primary_shards": 15,
+  "active_shards": 15
+}
+```
+
+<Note>
+**Status meanings:**
+- **Green**: All shards allocated, cluster healthy
+- **Yellow**: All primary shards allocated, some replicas unallocated
+- **Red**: Some primary shards unallocated, data loss possible
+</Note>
+
+**Log indicators:**
+```
+[INFO] : ElasticSearch host is: localhost:9200
+[ERROR] : Received a connection timeout error to elasticsearch: Connection timeout
+[ERROR] : Transport Error working with abc123: Connection refused
+```
+
+### System Resource Usage
+
+Monitor system resources to ensure adequate capacity.
+
+**Key metrics:**
+- CPU usage (multi-processing can be CPU-intensive)
+- Memory usage (caching domains and tags)
+- Disk space (log files, Elasticsearch indices)
+- Network I/O (API calls to AutoFocus)
+
+```bash
+# Check SafeNetworking process resource usage
+ps aux | grep sfn
+
+# Monitor in real-time
+top -p $(pgrep -f "sfn start")
+
+# Check disk usage
+df -h
+du -sh log/
+```
+
+## Key Metrics and Indicators
+
+### Healthy Operation
+
+<Check>**Indicators of healthy operation:**</Check>
+
+- Log level INFO shows regular processing cycles
+- AutoFocus points remaining above 5,000
+- Events processed successfully ("save: SUCCESS" messages)
+- No ERROR or CRITICAL level messages in recent logs
+- Elasticsearch cluster status is green or yellow
+- Background threads running without exceptions
+
+### Warning Signs
+
+<Warning>**Indicators requiring attention:**</Warning>
+
+- AutoFocus points below 5,000 (single-threaded mode active)
+- Frequent "Connection timeout" errors
+- Large number of unprocessed events accumulating
+- Repeated "Unable to work with event" errors
+- IoT database updates failing
+- Disk space low on log partition or Elasticsearch data
+
+### Critical Issues
+
+<Warning>**Indicators requiring immediate action:**</Warning>
+
+- AutoFocus API key not configured (CRITICAL log, application exits)
+- AutoFocus points below 500 (processing stopped)
+- Elasticsearch cluster status red
+- SafeNetworking process not running
+- Continuous ERROR messages in logs
+- Elasticsearch connection refused
+
+## Kibana Dashboards
+
+Visualize SafeNetworking operations and threat intelligence using Kibana dashboards.
+
+### Accessing Kibana
+
+```
+http://localhost:5601
+```
+
+Or use the configured `KIBANA_HOST` and `KIBANA_PORT` from `.panrc`.
+
+### Creating Index Patterns
+
+Before creating dashboards, configure index patterns in Kibana:
+
+1. Navigate to **Management > Stack Management > Index Patterns**
+2. Create index patterns for:
+   - `threat-*` (DNS threat events)
+   - `sfn-domain-details` (Cached domain intelligence)
+   - `sfn-tag-details` (Cached tag information)
+   - `sfn-iot-details` (IoT honeypot data)
+   - `sfn-details` (AutoFocus points tracking)
+
+### Recommended Visualizations
+
+<CardGroup cols={2}>
+  <Card title="AutoFocus Points" icon="gauge-high">
+    **Gauge visualization** showing daily points remaining
+    
+    - **Index:** `sfn-details`
+    - **Metric:** `daily_points_remaining`
+    - **Thresholds:** Red < 500, Yellow < 5000, Green ≥ 5000
+  </Card>
+  
+  <Card title="Event Processing Rate" icon="chart-line">
+    **Line chart** showing events processed over time
+    
+    - **Index:** `threat-*`
+    - **Metric:** Count of documents where `SFN.processed = 1`
+    - **Bucket:** Date histogram on `SFN.updated_at`
+  </Card>
+  
+  <Card title="Malware Family Distribution" icon="chart-pie">
+    **Pie chart** showing top malware families detected
+    
+    - **Index:** `threat-*`
+    - **Bucket:** Terms aggregation on `SFN.public_tag_name`
+    - **Filter:** `SFN.tag_class = "malware_family"`
+  </Card>
+  
+  <Card title="Threat Confidence Levels" icon="chart-bar">
+    **Bar chart** showing distribution of confidence levels
+    
+    - **Index:** `threat-*`
+    - **Bucket:** Range aggregation on `SFN.confidence_level`
+    - **Ranges:** 0-20, 20-40, 40-60, 60-80, 80-100
+  </Card>
+  
+  <Card title="Processing Errors" icon="triangle-exclamation">
+    **Data table** showing failed event processing
+    
+    - **Index:** `threat-*`
+    - **Filter:** `SFN.processed = 0` AND `@timestamp` < now-1h
+    - **Columns:** `@timestamp`, `SFN.domain_name`, `SFN.processed`
+  </Card>
+  
+  <Card title="IoT Threat Feed" icon="microchip">
+    **Data table** showing recent IoT threats
+    
+    - **Index:** `sfn-iot-details`
+    - **Columns:** `ip`, `public_tag_name`, `tag_class`, `time`
+    - **Sort:** `time` descending
+  </Card>
+</CardGroup>
+
+### Sample Dashboard Query
+
+**Get processing statistics:**
+```json
+GET threat-*/_search
+{
+  "size": 0,
+  "query": {
+    "match": { "tags": "DNS" }
+  },
+  "aggs": {
+    "processed_count": {
+      "value_count": { "field": "SFN.processed" }
+    },
+    "by_status": {
+      "terms": { "field": "SFN.processed" }
+    },
+    "by_tag_class": {
+      "terms": { "field": "SFN.tag_class.keyword" }
+    }
+  }
+}
+```
+
+## Monitoring Best Practices
+
+<Steps>
+  <Step title="Configure Alerting">
+    Set up alerts for critical thresholds:
+    - AutoFocus points below 5,000
+    - Elasticsearch cluster status not green
+    - Processing error rate above 5%
+    - SafeNetworking process not running
+  </Step>
+  
+  <Step title="Review Logs Daily">
+    Check `log/sfn.log` for ERROR and WARNING messages:
+    ```bash
+    grep -E "ERROR|WARNING|CRITICAL" log/sfn.log | tail -50
+    ```
+  </Step>
+  
+  <Step title="Monitor AutoFocus Usage">
+    Track daily and minute point consumption to optimize processing configuration and avoid rate limits.
+  </Step>
+  
+  <Step title="Archive Old Logs">
+    Rotate and archive log files periodically to prevent disk space issues:
+    ```bash
+    # Move old rotated logs to archive
+    mv log/sfn.log.* /archive/safenetworking/logs/
+    ```
+  </Step>
+  
+  <Step title="Tune Performance">
+    Adjust `DNS_POOL_COUNT`, `DNS_POOL_TIME`, and query sizes based on observed resource usage and throughput.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Resolve common issues and errors
+  </Card>
+  <Card title="Running SafeNetworking" icon="play" href="/operations/running-safenetworking">
+    Learn how to start and configure SafeNetworking
+  </Card>
+</CardGroup>

@@ -1,0 +1,698 @@
+---
+title: 'Kibana Dashboards'
+description: 'Access and explore pre-configured Kibana dashboards for threat visualization and analysis'
+icon: 'chart-mixed'
+---
+
+## Overview
+
+SafeNetworking includes pre-configured Kibana dashboards and visualizations for analyzing threat intelligence, DNS events, IoT threats, and GTP/SCTP mobile carrier logs. These dashboards provide real-time visibility into malicious activities correlated with the Palo Alto Networks Threat Intelligence Cloud.
+
+<Info>
+  Kibana is part of the ElasticStack and serves as the visualization layer for all logs processed by SafeNetworking.
+</Info>
+
+## Accessing Kibana
+
+### Default Configuration
+
+Kibana is accessible via web browser on port 5601:
+
+```
+http://<safenetworking-ip>:5601
+```
+
+<Note>
+  Replace `<safenetworking-ip>` with the IP address or hostname of your SafeNetworking installation.
+</Note>
+
+### First Time Setup
+
+On first access, you may need to configure index patterns:
+
+<Steps>
+  <Step title="Access Kibana">
+    Navigate to `http://<safenetworking-ip>:5601` in your browser
+  </Step>
+  
+  <Step title="Configure Index Patterns">
+    If not already configured, create index patterns for:
+    - `threat-*` - Threat logs from firewalls
+    - `traffic-*` - Traffic logs (optional)
+    - `gtp-*` - GTP mobile carrier logs
+    - `sctp-*` - SCTP signaling logs
+    - `iot-*` - External IoT threat logs
+    - `system-*` - System logs
+  </Step>
+  
+  <Step title="Import Dashboards">
+    Pre-configured dashboards should be automatically loaded. If not, import from:
+    ```bash
+    /path/to/safenetworking/install/kibana/export.json
+    ```
+  </Step>
+</Steps>
+
+## Pre-configured Workspaces
+
+SafeNetworking v4.0 includes separate workspaces for different threat categories:
+
+<CardGroup cols={2}>
+  <Card title="DNS Threat Workspace" icon="globe">
+    Visualizations for DNS-based threats, including sinkhole events and malicious domain queries
+  </Card>
+  <Card title="IoT Threat Workspace" icon="microchip">
+    IoT device threats correlated with HoneyPot DB information
+  </Card>
+  <Card title="GTP/SCTP Workspace" icon="tower-cell">
+    Mobile carrier GTP tunnel and SCTP signaling events with EventCode enrichment
+  </Card>
+  <Card title="System Logging Workspace" icon="server">
+    System-level logs and metrics from SafeNetworking infrastructure
+  </Card>
+</CardGroup>
+
+## Key Dashboards and Visualizations
+
+### DNS Threat Dashboard
+
+The DNS Threat dashboard provides comprehensive visibility into DNS-based threats:
+
+<Tabs>
+  <Tab title="Overview">
+    **Key Metrics**:
+    - Total DNS threat events
+    - Unique malicious domains
+    - Top threat categories
+    - Geographic distribution of threats
+    
+    **Visualizations**:
+    - Timeline of DNS threats by severity
+    - Top 10 malicious domains
+    - Threat distribution by category (dns, dns-cloud, dns-security)
+    - Source IP geographic heatmap
+  </Tab>
+  
+  <Tab title="Filters">
+    Pre-configured filters available:
+    - **EDL Events**: Show only EDL-derived DNS threats
+    - **Content Events**: Show content-based DNS signatures
+    - **Cloud Events**: Show DNS Security cloud-based detections
+    - **Severity**: Filter by Critical, High, Medium, Low
+    - **Time Range**: Last 15 minutes to last 90 days
+  </Tab>
+  
+  <Tab title="Drill-down">
+    Click on any visualization to drill down:
+    - Domain details with AutoFocus enrichment
+    - Associated malware families
+    - Historical events for the domain
+    - Affected internal hosts
+  </Tab>
+</Tabs>
+
+### IoT Threat Dashboard
+
+<Info>
+  New in v4.0: Full support for non-PAN-OS IoT threat events parsed through Logstash and tagged via HoneyPot DB.
+</Info>
+
+**Key Visualizations**:
+- Top IoT malware families
+- Infected device IPs
+- Command and control (C2) destinations
+- Tag groups and classifications
+- Timeline of IoT events
+
+**Common Use Cases**:
+- Identify compromised IoT devices on your network
+- Track IoT botnet activity
+- Correlate IoT threats with HoneyPot intelligence
+
+### GTP/SCTP Dashboard
+
+<Info>
+  New in v4.0: Full support for GTP and SCTP logs with EventCode enrichment.
+</Info>
+
+**Mobile Carrier Specific**:
+- GTP tunnel events
+- SCTP association tracking
+- Event code breakdown
+- IMSI/IMEI tracking (with customer DB enrichment)
+- Geographic distribution of mobile events
+
+**GTP Event Codes**:
+The dashboard includes enriched event code information:
+
+```json
+{
+  "GTP": {
+    "GTPVersion": "v2",
+    "Description": "Invalid GTP Version",
+    "InformationElement": "Version",
+    "MessageType": "Control",
+    "EventCode": "144"
+  }
+}
+```
+
+### System Logging Dashboard
+
+Monitor SafeNetworking infrastructure health:
+
+**Metrics Tracked**:
+- Logstash event processing rate
+- Elasticsearch indexing performance
+- Failed event logs
+- Storage utilization
+- Index shard health
+
+## Index Patterns
+
+### Available Indices
+
+SafeNetworking uses dated indices for efficient data management:
+
+| Index Pattern | Description | Example |
+|--------------|-------------|----------|
+| `threat-*` | Threat logs (THREAT type from firewalls) | `threat-2026.03` |
+| `traffic-*` | Traffic logs (TRAFFIC type, optional) | `traffic-2026.03` |
+| `gtp-*` | GTP mobile carrier logs | `gtp-2026.03` |
+| `sctp-*` | SCTP signaling logs | `sctp-2026.03` |
+| `iot-*` | External IoT threat logs | `iot-2026.03` |
+| `system-*` | System configuration logs | `system-2026.03` |
+| `config-*` | Firewall configuration changes | `config-2026.03` |
+| `metric-*` | Performance metrics | `metric-2026.03` |
+
+<Note>
+  Indices are created monthly (YYYY.MM format) to facilitate data curation and retention management.
+</Note>
+
+### Index Field Mappings
+
+Key fields available for searching and visualization:
+
+<Accordion title="Common Fields">
+  ```json
+  {
+    "@timestamp": "2026-03-04T10:30:00.000Z",
+    "SourceIP": "192.168.1.50",
+    "DestinationIP": "203.0.113.100",
+    "Application": "ssl",
+    "RuleName": "Internet-Access",
+    "Action": "alert",
+    "Severity": "high",
+    "SourceZone": "trust",
+    "DestinationZone": "untrust"
+  }
+  ```
+</Accordion>
+
+<Accordion title="DNS Threat Fields">
+  ```json
+  {
+    "ThreatID": "DNS:C2/Generic-A(52020)",
+    "ThreatCategory": "dns",
+    "URL_Filename": "malicious.example.com",
+    "Category": "command-and-control",
+    "tags": ["PAN-OS_threat", "SFN-DNS", "SFN-CONTENT"],
+    "SFN": {
+      "domain_name": "malicious.example.com",
+      "threat_name": "C2/Generic-A",
+      "sig_num": "52020",
+      "processed": 0
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="GTP Fields">
+  ```json
+  {
+    "Type": "GTP",
+    "EventCode": "100201",
+    "MSISDN": "+1234567890",
+    "IMSI": "310150123456789",
+    "IMEI": "123456789012345",
+    "APN": "internet",
+    "RAT": "LTE",
+    "GTP": {
+      "GTPVersion": "v2",
+      "Description": "Create Session Request",
+      "MessageType": "Control",
+      "EventCode": "100201"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="IoT Fields">
+  ```json
+  {
+    "SourceIP": "10.0.50.25",
+    "DestinationIP": "198.51.100.50",
+    "tags": ["SFN-IOT"],
+    "SFN": {
+      "file_type": "PE32",
+      "tag_name": "Mirai",
+      "public_tag_name": "Mirai Botnet",
+      "tag_description": "IoT botnet malware",
+      "tag_group_name": "Botnet",
+      "tag_class": "malware"
+    }
+  }
+  ```
+</Accordion>
+
+## Creating Custom Dashboards
+
+### Step 1: Create a Visualization
+
+<Steps>
+  <Step title="Navigate to Visualize">
+    In Kibana, go to **Visualize** from the left sidebar
+  </Step>
+  
+  <Step title="Create New Visualization">
+    Click **Create visualization** and select type:
+    - **Area/Line Chart**: Time-series trends
+    - **Data Table**: Detailed event listings
+    - **Pie Chart**: Distribution breakdowns
+    - **Heat Map**: Geographic or correlation maps
+    - **Metric**: Single value counters
+  </Step>
+  
+  <Step title="Select Index Pattern">
+    Choose the appropriate index pattern (e.g., `threat-*`)
+  </Step>
+  
+  <Step title="Configure Metrics and Buckets">
+    - **Metrics**: What to measure (count, sum, avg)
+    - **Buckets**: How to group (date histogram, terms, filters)
+  </Step>
+  
+  <Step title="Save Visualization">
+    Give it a descriptive name and save
+  </Step>
+</Steps>
+
+### Example: Top Malicious Domains
+
+<CodeGroup>
+```json Visualization Config
+{
+  "visualization_type": "data_table",
+  "index_pattern": "threat-*",
+  "metrics": {
+    "metric_1": {
+      "type": "count"
+    }
+  },
+  "buckets": {
+    "bucket_1": {
+      "type": "terms",
+      "field": "SFN.domain_name.keyword",
+      "size": 10,
+      "order": "desc"
+    }
+  },
+  "filters": [
+    {
+      "query": "tags:SFN-DNS"
+    }
+  ]
+}
+```
+</CodeGroup>
+
+### Step 2: Build a Dashboard
+
+<Steps>
+  <Step title="Navigate to Dashboard">
+    Go to **Dashboard** from the left sidebar
+  </Step>
+  
+  <Step title="Create New Dashboard">
+    Click **Create new dashboard**
+  </Step>
+  
+  <Step title="Add Visualizations">
+    Click **Add** and select saved visualizations or create new ones
+  </Step>
+  
+  <Step title="Arrange Layout">
+    Drag and resize visualizations to organize your dashboard
+  </Step>
+  
+  <Step title="Add Filters">
+    Add dashboard-level filters for time range, severity, zones, etc.
+  </Step>
+  
+  <Step title="Save Dashboard">
+    Give it a meaningful name and save
+  </Step>
+</Steps>
+
+## Common Queries and Filters
+
+### Query Syntax
+
+Kibana uses Kibana Query Language (KQL) or Lucene syntax:
+
+<Tabs>
+  <Tab title="KQL Examples">
+    ```
+    # All DNS threats
+    tags:"SFN-DNS"
+    
+    # High severity threats
+    Severity:"high" or Severity:"critical"
+    
+    # Specific source IP
+    SourceIP:"192.168.1.50"
+    
+    # DNS Cloud events
+    tags:"SFN-CLOUD"
+    
+    # Threats from untrust zone
+    SourceZone:"untrust"
+    
+    # Specific malware family
+    SFN.threat_name:"Mirai"
+    ```
+  </Tab>
+  
+  <Tab title="Lucene Examples">
+    ```
+    # Multiple conditions (AND)
+    tags:SFN-DNS AND Severity:high
+    
+    # Multiple conditions (OR)
+    tags:SFN-DNS OR tags:SFN-EDL
+    
+    # Wildcard search
+    SFN.domain_name:*.ru
+    
+    # Range query
+    DestinationPort:[1024 TO 65535]
+    
+    # Exists query
+    _exists_:SFN.tag_name
+    
+    # NOT query
+    NOT SourceZone:trust
+    ```
+  </Tab>
+</Tabs>
+
+### Saved Searches
+
+Create reusable searches for common queries:
+
+<AccordionGroup>
+  <Accordion title="Unprocessed DNS Threats">
+    **Query**: `tags:SFN-DNS AND SFN.processed:0`
+    
+    **Purpose**: Find DNS threats awaiting AutoFocus enrichment
+    
+    **Index**: `threat-*`
+  </Accordion>
+  
+  <Accordion title="EDL-based Threats">
+    **Query**: `tags:SFN-EDL`
+    
+    **Purpose**: Show threats detected via External Dynamic Lists
+    
+    **Index**: `threat-*`
+  </Accordion>
+  
+  <Accordion title="GTP Events with Errors">
+    **Query**: `tags:SFN-GTP AND Severity:critical`
+    
+    **Purpose**: Critical GTP tunnel events
+    
+    **Index**: `gtp-*`
+  </Accordion>
+  
+  <Accordion title="IoT Malware by Tag">
+    **Query**: `tags:SFN-IOT AND _exists_:SFN.tag_name`
+    
+    **Purpose**: IoT events with identified malware tags
+    
+    **Index**: `iot-*`
+  </Accordion>
+  
+  <Accordion title="High Severity Outbound Threats">
+    **Query**: `Severity:(high OR critical) AND SourceZone:trust AND DestinationZone:untrust`
+    
+    **Purpose**: Critical internal hosts reaching malicious destinations
+    
+    **Index**: `threat-*`
+  </Accordion>
+</AccordionGroup>
+
+### Filter by Time Range
+
+Quick time range options:
+
+- **Last 15 minutes**: Real-time monitoring
+- **Last 1 hour**: Recent activity analysis
+- **Last 24 hours**: Daily threat overview
+- **Last 7 days**: Weekly trend analysis
+- **Last 30 days**: Monthly reporting
+- **Custom**: Specify exact date/time range
+
+<Tip>
+  Use **Auto-refresh** for real-time dashboard updates (e.g., refresh every 30 seconds)
+</Tip>
+
+## Advanced Features
+
+### Elasticsearch DSL Queries
+
+For complex queries, use Elasticsearch Query DSL directly:
+
+<CodeGroup>
+```json Get Latest DNS Events
+GET threat-*/_search
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "tags": "SFN-DNS" }},
+        { "match": { "SFN.processed": "0" }}
+      ]
+    }
+  },
+  "sort": [
+    { "@timestamp": { "order": "desc" }}
+  ]
+}
+```
+
+```json Aggregate by Threat Category
+GET threat-*/_search
+{
+  "size": 0,
+  "aggs": {
+    "threat_categories": {
+      "terms": {
+        "field": "ThreatCategory.keyword",
+        "size": 10
+      }
+    }
+  }
+}
+```
+
+```json Top Source IPs
+GET threat-*/_search
+{
+  "size": 0,
+  "query": {
+    "range": {
+      "@timestamp": {
+        "gte": "now-24h"
+      }
+    }
+  },
+  "aggs": {
+    "top_sources": {
+      "terms": {
+        "field": "SourceIP.keyword",
+        "size": 10
+      },
+      "aggs": {
+        "unique_threats": {
+          "cardinality": {
+            "field": "ThreatID.keyword"
+          }
+        }
+      }
+    }
+  }
+}
+```
+</CodeGroup>
+
+### Exporting Data
+
+Export dashboard data for external analysis:
+
+1. **CSV Export**: From any data table visualization
+2. **Screenshot**: Use Kibana's reporting feature
+3. **API Export**: Use Elasticsearch API for bulk exports
+
+```bash
+# Export last 1000 threat events to JSON
+curl -X GET "localhost:9200/threat-*/_search?size=1000&pretty" > threats.json
+
+# Export with specific fields only
+curl -X GET "localhost:9200/threat-*/_search?pretty" -H 'Content-Type: application/json' -d'
+{
+  "_source": ["@timestamp", "SourceIP", "SFN.domain_name", "Severity"],
+  "size": 1000,
+  "sort": [{ "@timestamp": "desc" }]
+}
+' > threats_summary.json
+```
+
+## Performance Optimization
+
+<AccordionGroup>
+  <Accordion title="Index Management">
+    SafeNetworking uses monthly indices to balance performance and manageability:
+    
+    **Benefits**:
+    - Faster searches on recent data
+    - Easier data retention (delete old months)
+    - Reduced shard count
+    
+    **Retention Strategy**:
+    ```bash
+    # Delete indices older than 90 days
+    curator_cli delete_indices --filter_list '
+    [
+      {"filtertype":"pattern","kind":"prefix","value":"threat-"},
+      {"filtertype":"age","source":"name","direction":"older","unit":"days","unit_count":90}
+    ]'
+    ```
+  </Accordion>
+  
+  <Accordion title="Query Optimization">
+    **Best Practices**:
+    - Use narrow time ranges when possible
+    - Filter early in the query pipeline
+    - Use keyword fields for exact matches
+    - Avoid wildcard prefixes (e.g., `*domain.com`)
+    
+    **Example - Optimized vs Slow**:
+    ```
+    # Slow: Wildcard prefix
+    SFN.domain_name:*example.com
+    
+    # Fast: Wildcard suffix
+    SFN.domain_name:example.*
+    
+    # Fast: Exact match on keyword field
+    SFN.domain_name.keyword:"example.com"
+    ```
+  </Accordion>
+  
+  <Accordion title="Dashboard Performance">
+    **Tips for Faster Dashboards**:
+    - Limit visualizations per dashboard (max 10-15)
+    - Use appropriate time ranges
+    - Enable dashboard caching
+    - Use sampler aggregations for large datasets
+    - Schedule heavy dashboards as reports
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Dashboard Not Loading">
+    **Check Elasticsearch Status**:
+    ```bash
+    curl -X GET "localhost:9200/_cluster/health?pretty"
+    ```
+    
+    **Verify Kibana Service**:
+    ```bash
+    sudo systemctl status kibana
+    ```
+    
+    **Check Browser Console**: Look for JavaScript errors (F12 developer tools)
+  </Accordion>
+  
+  <Accordion title="No Data in Visualizations">
+    **Verify Index Pattern**:
+    - Go to **Stack Management > Index Patterns**
+    - Ensure patterns match actual indices
+    - Refresh field list if needed
+    
+    **Check Time Range**: Expand time range to ensure data exists
+    
+    **Verify Data in Elasticsearch**:
+    ```bash
+    curl -X GET "localhost:9200/_cat/indices?v"
+    curl -X GET "localhost:9200/threat-*/_count"
+    ```
+  </Accordion>
+  
+  <Accordion title="Slow Dashboard Performance">
+    **Check Shard Health**:
+    ```bash
+    curl -X GET "localhost:9200/_cat/shards?v&h=index,shard,prirep,state,docs,store&s=index"
+    ```
+    
+    **Monitor Search Performance**:
+    ```bash
+    curl -X GET "localhost:9200/_nodes/stats/indices/search?pretty"
+    ```
+    
+    **Optimize Indices**:
+    ```bash
+    curl -X POST "localhost:9200/threat-*/_forcemerge?max_num_segments=1"
+    ```
+  </Accordion>
+  
+  <Accordion title="Missing Fields in Search">
+    **Refresh Index Pattern Fields**:
+    1. Go to **Stack Management > Index Patterns**
+    2. Select your index pattern
+    3. Click refresh button (circular arrow)
+    
+    **Verify Field Mapping**:
+    ```bash
+    curl -X GET "localhost:9200/threat-*/_mapping?pretty"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Firewall Configuration" icon="shield" href="/integration/firewall-configuration">
+    Configure your firewall to send logs to SafeNetworking
+  </Card>
+  <Card title="Data Model" icon="book" href="/concepts/data-model">
+    Learn about Elasticsearch indexes and document schemas
+  </Card>
+  <Card title="Monitoring" icon="code" href="/operations/monitoring">
+    Monitor SafeNetworking system health and metrics
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Kibana Documentation](https://www.elastic.co/guide/en/kibana/7.1/index.html)
+- [Elasticsearch Query DSL](https://www.elastic.co/guide/en/elasticsearch/reference/7.1/query-dsl.html)
+- [Beginner Troubleshooting Searches](https://www.elastic.co/blog/found-beginner-troubleshooting)
+- [SafeNetworking Search Examples](https://github.com/PaloAltoNetworks/safe-networking/blob/master/docs/examples/search-examples.md)

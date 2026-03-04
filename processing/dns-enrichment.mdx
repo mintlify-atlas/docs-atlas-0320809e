@@ -1,0 +1,403 @@
+---
+title: DNS Threat Enrichment
+description: How SafeNetworking enriches DNS threat events with AutoFocus intelligence
+---
+
+## Overview
+
+SafeNetworking's DNS enrichment module automatically processes DNS threat events from your firewall, enriching them with threat intelligence from Palo Alto Networks AutoFocus. The system classifies threats by campaign, actor, or malware family, and assigns confidence scores based on sample age and tag relevance.
+
+## How DNS Processing Works
+
+The DNS enrichment pipeline consists of three main stages:
+
+### 1. Event Classification
+
+When DNS threat events arrive in Elasticsearch, the `unprocessedEventSearch()` function queries for unprocessed events tagged as "DNS" and classifies them into two categories:
+
+<CardGroup cols={2}>
+  <Card title="Primary Events" icon="bolt">
+    Domain already exists in local cache (`sfn-domain-details` index). These are processed immediately with cached threat intelligence.
+  </Card>
+  <Card title="Secondary Events" icon="clock">
+    Domain not in cache. Requires AutoFocus API lookup to retrieve threat intelligence before processing.
+  </Card>
+</CardGroup>
+
+```python
+# From runner.py:34-66
+eventSearch = Search(index="threat-*") \
+        .query("match", tags="DNS") \
+        .query("match", ** { "SFN.processed":0})  \
+        .sort({"@timestamp": {"order" : "desc"}})
+eventSearch = eventSearch[:qSize]
+searchResponse = eventSearch.execute()
+
+for hit in searchResponse.hits:
+    domainName = hit['SFN']['domain_name']
+    domainSearch = Search(index="sfn-domain-details") \
+                    .query("match", name=domainName)
+    if domainSearch.execute():
+        # Primary - domain cached
+        priDocIds.append(entry)
+    else:
+        # Secondary - needs lookup
+        secDocIds.append(entry)
+```
+
+### 2. AutoFocus Domain Lookup
+
+The `getDomainDoc()` function manages the domain cache and AutoFocus queries:
+
+```python
+# From dnsutils.py:462-520
+def getDomainDoc(domainName):
+    timeLimit = (datetime.datetime.now() - 
+                 datetime.timedelta(days=app.config['DNS_DOMAIN_INFO_MAX_AGE']))
+    
+    try:
+        domainDoc = DomainDetailsDoc.get(id=domainName)
+        
+        # Check if cache is stale
+        if timeLimit > domainDoc.doc_updated:
+            updateDetails = True
+    except NotFoundError:
+        # Domain not cached - query AutoFocus
+        updateDetails = True
+    
+    if updateDetails:
+        afDomainData = getDomainInfo(domainName)
+        domainDoc = DomainDetailsDoc(meta={'id': domainName}, name=domainName)
+        domainDoc.tags = afDomainData
+        domainDoc.save()
+    
+    return domainDoc
+```
+
+<Note>
+Domain cache entries expire after `DNS_DOMAIN_INFO_MAX_AGE` days (default: 30). This ensures threat intelligence stays current while minimizing API calls.
+</Note>
+
+### 3. Tag Assessment and Confidence Scoring
+
+The `assessTags()` function analyzes AutoFocus tags to determine the most relevant threat classification:
+
+```python
+# From dnsutils.py:243-340
+def assessTags(tagsObj):
+    # Priority order: Campaign > Actor > Malware Family
+    for entry in tagsObj:
+        for tag in entry[2]:
+            tagClass = tag[2]
+            
+            if tagClass == "campaign":
+                # Highest priority - immediate return
+                tagInfo = {"confidence_level": 90, ...}
+                return tagInfo
+                
+            elif tagClass == "actor":
+                tagInfo = {"confidence_level": 90, ...}
+                # Continue checking for campaigns
+                
+            elif tagClass == "malware_family":
+                # Calculate confidence based on sample age
+                dateDiff = (datetime.datetime.now() - 
+                           datetime.datetime.strptime(sampleDate, "%Y-%m-%dT%H:%M:%S"))
+                
+                for days in tagConfLevels:
+                    if dateDiff.days < int(days):
+                        confLevel = tagConfLevels[days]
+                        break
+```
+
+#### Confidence Level Calculation
+
+For malware family tags, confidence decreases as sample age increases:
+
+| Sample Age | Confidence Level |
+|------------|------------------|
+| < 15 days  | 90%              |
+| < 25 days  | 80%              |
+| < 40 days  | 70%              |
+| < 50 days  | 60%              |
+| < 60 days  | 50%              |
+| ≥ 60 days  | 5%               |
+
+<Tip>
+Configure custom confidence thresholds using the `CONFIDENCE_LEVELS` parameter in `.panrc`:
+```python
+CONFIDENCE_LEVELS = "{'15':90,'25':80,'40':70,'50':60,'60':50}"
+```
+</Tip>
+
+## Multiprocessing Architecture
+
+The `processDNS()` function uses Python's multiprocessing to handle events efficiently:
+
+```python
+# From runner.py:75-107
+def processDNS():
+    priDocIds, secDocIds = unprocessedEventSearch()
+    
+    # Cap at 16 processes to respect AutoFocus API rate limits
+    multiProcNum = app.config['DNS_POOL_COUNT'] if app.config['DNS_POOL_COUNT'] <= 16 else 16
+    
+    # Process primary events (cached domains)
+    with Pool(multiProcNum) as pool:
+        results = pool.map(searchDomain, priDocIds)
+    
+    # Process secondary events (new domains)
+    with Pool(multiProcNum) as pool:
+        results = pool.map(searchDomain, secDocIds)
+```
+
+<Warning>
+**AutoFocus API Rate Limits**: The system automatically caps concurrent processes at 16 to avoid exceeding AutoFocus minute bucket limits (200 points/minute). Each domain lookup consumes 10-14 API points.
+</Warning>
+
+## Event Enrichment
+
+The `searchDomain()` function updates each threat event with enriched data:
+
+```python
+# From runner.py:176-189
+eventDoc = DNSEventDoc.get(id=eventID, index=eventIndex)
+eventDoc.SFN.event_type = "DNS"
+eventDoc.SFN.tag_name = eventTag['tag_name']
+eventDoc.SFN.public_tag_name = eventTag['public_tag_name']
+eventDoc.SFN.tag_class = eventTag['tag_class']
+eventDoc.SFN.tag_group = eventTag['tag_group']
+eventDoc.SFN.confidence_level = eventTag['confidence_level']
+eventDoc.SFN.sample_date = eventTag['sample_date']
+eventDoc.SFN.file_type = eventTag['file_type']
+eventDoc.SFN.tag_description = eventTag['description']
+eventDoc.SFN.updated_at = datetime.datetime.now()
+eventDoc.SFN.processed = processedValue  # 1 = success, 55 = no tags found
+eventDoc.save(id=eventID, index=eventIndex)
+```
+
+### Processed Status Values
+
+| Value | Meaning |
+|-------|----------|
+| `0`   | Unprocessed event |
+| `1`   | Successfully enriched with tags |
+| `55`  | No AutoFocus tags found for domain |
+
+## Configuration Options
+
+Configure DNS processing behavior in your `.panrc` file:
+
+```python
+# Number of processes for concurrent DNS lookups (max 16)
+DNS_POOL_COUNT = 16
+
+# Number of events to query per batch
+DNS_EVENT_QUERY_SIZE = 1000
+
+# Domain cache expiration (days)
+DNS_DOMAIN_INFO_MAX_AGE = 30
+
+# Tag cache expiration (days)
+DOMAIN_TAG_INFO_MAX_AGE = 120
+
+# AutoFocus query timeout (minutes)
+AF_LOOKUP_TIMEOUT = 2
+
+# Minimum completion percentage for AutoFocus queries
+AF_LOOKUP_MAX_PERCENTAGE = 20
+
+# AutoFocus API point management
+AF_POINTS_LOW = 5000        # Slow down when points drop below this
+AF_POINT_NOEXEC = 500        # Stop processing below this threshold
+AF_NOEXEC_CKTIME = 3600      # Seconds to wait before rechecking points
+
+# Confidence level thresholds (days:percentage)
+CONFIDENCE_LEVELS = "{'15':90,'25':80,'40':70,'50':60,'60':50}"
+
+# Processing interval (seconds between runs)
+DNS_POOL_TIME = 5
+```
+
+## AutoFocus API Point Management
+
+SafeNetworking includes built-in protection against exhausting your AutoFocus API quota:
+
+<Steps>
+  <Step title="Normal Operation">
+    Processes events using configured `DNS_POOL_COUNT` (up to 16 concurrent processes)
+  </Step>
+  <Step title="Low Points Warning">
+    When daily points drop below `AF_POINTS_LOW` (5000), switches to single-threaded processing to conserve API points
+  </Step>
+  <Step title="Critical Threshold">
+    When points drop below `AF_POINT_NOEXEC` (500), pauses all processing and checks every `AF_NOEXEC_CKTIME` seconds until points reset
+  </Step>
+</Steps>
+
+The system tracks AutoFocus bucket info in the `sfn-details` index:
+
+```python
+# From dnsutils.py:15-56
+afDoc = AFDetailsDoc(meta={'id': 'af-details'},
+                     minute_points=0,
+                     minute_points_remaining=0,
+                     daily_points=0,
+                     daily_points_remaining=0,
+                     minute_bucket_start=now,
+                     daily_bucket_start=now)
+```
+
+## Performance Tuning
+
+<AccordionGroup>
+  <Accordion title="High-Volume Environments">
+    For environments generating 10,000+ DNS threat events daily:
+    
+    - Increase `DNS_EVENT_QUERY_SIZE` to 2000-5000
+    - Set `DNS_POOL_COUNT` to 16 (maximum)
+    - Reduce `DNS_POOL_TIME` to 3-5 seconds
+    - Increase `DNS_DOMAIN_INFO_MAX_AGE` to 45-60 days to maximize cache hits
+  </Accordion>
+  
+  <Accordion title="Limited AutoFocus Quota">
+    If you have a restricted AutoFocus API quota:
+    
+    - Reduce `DNS_POOL_COUNT` to 4-8
+    - Increase `DNS_POOL_TIME` to 10-15 seconds
+    - Raise `AF_POINTS_LOW` to 7500 to trigger throttling earlier
+    - Set `DNS_DOMAIN_INFO_MAX_AGE` to 60-90 days to reduce API calls
+  </Accordion>
+  
+  <Accordion title="Debug Mode">
+    Enable debug mode for troubleshooting:
+    
+    ```python
+    DEBUG_MODE = True
+    ```
+    
+    This processes events sequentially (one at a time) with verbose logging to `log/sfn.log`.
+  </Accordion>
+</AccordionGroup>
+
+## Index Structure
+
+DNS enrichment uses three Elasticsearch indices:
+
+### threat-* (Enriched Events)
+
+Stores enriched DNS threat events with pattern `threat-YYYY.MM`:
+
+```json
+{
+  "SFN": {
+    "event_type": "DNS",
+    "domain_name": "malicious.example.com",
+    "tag_name": "Unit42.Mirai",
+    "public_tag_name": "Mirai",
+    "tag_class": "malware_family",
+    "tag_group": "IoT Botnet",
+    "confidence_level": 90,
+    "sample_date": "2026-02-15T14:32:00",
+    "file_type": "elf",
+    "tag_description": "Mirai botnet malware targeting IoT devices",
+    "processed": 1,
+    "updated_at": "2026-03-04T10:15:30"
+  }
+}
+```
+
+### sfn-domain-details (Domain Cache)
+
+Caches AutoFocus domain intelligence:
+
+```json
+{
+  "name": "malicious.example.com",
+  "tags": [
+    [
+      "2026-02-15T14:32:00",
+      "elf",
+      [
+        ["Unit42.Mirai", "Mirai", "malware_family", "IoT Botnet", "Mirai botnet..."]
+      ]
+    ]
+  ],
+  "doc_created": "2026-03-04T10:15:30",
+  "doc_updated": "2026-03-04T10:15:30"
+}
+```
+
+### sfn-tag-details (Tag Cache)
+
+Caches AutoFocus tag metadata:
+
+```json
+{
+  "name": "Unit42.Mirai",
+  "tag": {
+    "tag_name": "Unit42.Mirai",
+    "public_tag_name": "Mirai",
+    "tag_class": "malware_family",
+    "description": "Mirai botnet malware targeting IoT devices"
+  },
+  "tag_groups": [
+    {
+      "tag_group_name": "IoT Botnet",
+      "description": "Botnets targeting IoT devices"
+    }
+  ],
+  "doc_updated": "2026-03-04T10:15:30"
+}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Events not being processed">
+    Check `log/sfn.log` for:
+    
+    - AutoFocus API connectivity issues
+    - Point exhaustion warnings
+    - Elasticsearch connection errors
+    
+    Verify DNS processing is enabled:
+    ```python
+    DNS_PROCESSING = True
+    ```
+  </Accordion>
+  
+  <Accordion title="Slow processing speed">
+    Common causes:
+    
+    - `AF_POINTS_MODE` triggered (check daily points remaining)
+    - `DNS_POOL_COUNT` set too low
+    - High percentage of secondary events (cache misses)
+    - Network latency to AutoFocus API
+  </Accordion>
+  
+  <Accordion title="No tags found for domains">
+    This is expected behavior for domains without AutoFocus intelligence. Events are marked with:
+    
+    ```python
+    SFN.processed = 55
+    SFN.tag_name = "No tags found for domain"
+    ```
+    
+    These domains may be:
+    - Newly registered (not yet in AutoFocus)
+    - Low-profile threats
+    - False positives from firewall signatures
+  </Accordion>
+</AccordionGroup>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="IoT Threat Processing" icon="microchip" href="/processing/iot-threats">
+    Learn about IoT honeypot threat enrichment
+  </Card>
+  <Card title="AutoFocus Configuration" icon="gear" href="/configuration/autofocus-api">
+    Complete AutoFocus API configuration reference
+  </Card>
+</CardGroup>

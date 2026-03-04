@@ -1,0 +1,831 @@
+---
+title: Installation
+description: Complete installation guide for SafeNetworking with detailed prerequisites, configuration, and verification steps
+---
+
+# Installation Guide
+
+This guide provides comprehensive installation instructions for SafeNetworking, including system prerequisites, ElasticStack setup, application configuration, and verification procedures.
+
+<Warning>
+This installation is designed for development and proof-of-concept environments. For production deployments, consult with your Palo Alto Networks account team or the SafeNetworking community for additional hardening and scaling recommendations.
+</Warning>
+
+## System Requirements
+
+### Hardware Requirements
+
+<CardGroup cols={2}>
+  <Card title="Minimum Configuration" icon="server">
+    - **CPU**: 4 cores
+    - **RAM**: 8 GB
+    - **Disk**: 100 GB
+    - **Network**: 1 Gbps
+  </Card>
+  
+  <Card title="Recommended Configuration" icon="server">
+    - **CPU**: 8+ cores
+    - **RAM**: 16 GB+
+    - **Disk**: 500 GB+ SSD
+    - **Network**: 1 Gbps
+  </Card>
+</CardGroup>
+
+<Note>
+Disk space requirements depend on log volume and retention policies. Plan for at least 100 GB per month of data at moderate log rates.
+</Note>
+
+### Software Requirements
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| Operating System | Ubuntu 18.04 LTS | Other Debian-based distros may work |
+| Python | 3.6+ | Required for SafeNetworking application |
+| Elasticsearch | 7.1.1+ | Installed by setup script |
+| Logstash | 7.1.1+ | Installed by setup script |
+| Kibana | 7.1.1+ | Installed by setup script |
+| Java | 11+ | Required by ElasticStack components |
+
+### Network Requirements
+
+- **Inbound UDP 5514**: Syslog from Palo Alto Networks firewalls
+- **Outbound HTTPS (443)**: Access to `autofocus.paloaltonetworks.com`
+- **Inbound TCP 5601**: Kibana web interface (optional, can be firewalled)
+- **Inbound TCP 9200**: Elasticsearch API (should be firewalled, localhost only)
+
+### Required Credentials
+
+<Steps>
+  <Step title="AutoFocus API Key">
+    Obtain an API key from the AutoFocus portal:
+    1. Log in to https://autofocus.paloaltonetworks.com
+    2. Navigate to **Settings → API Key**
+    3. Generate or copy your API key
+  </Step>
+  
+  <Step title="System Access">
+    - Root or sudo access to the installation system
+    - SSH access for remote installation
+  </Step>
+</Steps>
+
+## Pre-Installation Preparation
+
+### Update System Packages
+
+```bash
+sudo apt-get update
+sudo apt-get upgrade -y
+```
+
+### Install Prerequisites
+
+Install required packages before running the setup script:
+
+```bash
+# Install Java (required for ElasticStack)
+sudo apt-get install -y openjdk-11-jdk
+
+# Install Python 3.6 and development tools
+sudo apt-get install -y python3.6 python3.6-venv python3-pip
+
+# Install build essentials
+sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
+
+# Install git
+sudo apt-get install -y git
+```
+
+### Install ElasticStack Components
+
+If ElasticStack is not already installed, install it before running the SafeNetworking setup:
+
+```bash
+# Import Elasticsearch GPG key
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
+
+# Add Elastic repository
+sudo apt-get install apt-transport-https
+echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee /etc/apt/sources.list.d/elastic-7.x.list
+
+# Update package list
+sudo apt-get update
+
+# Install Elasticsearch, Logstash, and Kibana
+sudo apt-get install -y elasticsearch logstash kibana
+```
+
+## SafeNetworking Installation
+
+### 1. Clone Repository
+
+Clone the SafeNetworking repository to your home directory:
+
+```bash
+cd ~
+git clone https://github.com/PaloAltoNetworks/safe-networking.git
+cd safe-networking
+```
+
+### 2. Review Installation Script
+
+Before running the setup script, review what it will do:
+
+```bash
+less install/setup.sh
+```
+
+The setup script performs the following operations:
+
+<Accordion title="Setup Script Operations">
+  - Creates `~/es_backup` directory for Elasticsearch backups
+  - Creates Python virtual environment in `.env/`
+  - Installs Python dependencies from `requirements.txt`
+  - Configures Elasticsearch settings and JVM options
+  - Sets system limits in `/etc/security/limits.conf`
+  - Configures `vm.max_map_count` in `/etc/sysctl.conf`
+  - Installs Logstash pipelines and configurations
+  - Configures Kibana settings
+  - Enables services to start at boot
+  - Creates Elasticsearch index mappings
+  - Installs `.panrc` configuration file
+  - Initializes IoT lookup data
+</Accordion>
+
+### 3. Run Setup Script
+
+Execute the setup script with sudo privileges:
+
+```bash
+sudo ./install/setup.sh
+```
+
+<Tip>
+For GTP/SCTP support, run with the `--gtp` flag:
+```bash
+sudo ./install/setup.sh --gtp
+```
+</Tip>
+
+The script will:
+
+- Create backups of existing configuration files with timestamps
+- Display progress with color-coded status messages
+- Wait for services to start and verify they're running
+- Install index mappings into Elasticsearch
+
+Expected output:
+
+```
+>>> Setting up for user yourusername in /home/yourusername directory
+>>> Creating directory for ES backups - COMPLETE
+>>> Backing up elasticsearch config files - COMPLETE
+>>> Installing new elasticsearch config files - COMPLETE
+>>> Configuring limits.conf and sysctl.conf settings
+...
+>>> Setting up Elasticsearch auto-start <<<
+  - Waiting 10 seconds for Elasticsearch to start
+  * Elasticsearch is up and running - COMPLETE
+...
+```
+
+## Configuration
+
+### 1. Configure .panrc File
+
+The `.panrc` file contains all runtime configuration for SafeNetworking. It's located in your home directory.
+
+```bash
+nano ~/.panrc
+```
+
+#### Required Configuration
+
+At minimum, you must configure your AutoFocus API key:
+
+```python
+################################################################################
+#                                 API Keys
+################################################################################
+AUTOFOCUS_API_KEY = "YOUR-API-KEY-HERE"
+```
+
+#### Optional Configuration Parameters
+
+<Tabs>
+  <Tab title="Application Settings">
+    ```python
+    # Processing intervals (seconds)
+    DNS_POOL_TIME = 5        # DNS event processing interval
+    IOT_POOL_TIME = 600      # IoT processing interval  
+    AF_POOL_TIME = 600       # AutoFocus point check interval
+    
+    # Processing control
+    DNS_POOL_COUNT = 16      # Concurrent DNS processors (max 16)
+    DNS_EVENT_QUERY_SIZE = 1000  # Events to query per cycle
+    
+    # AutoFocus point management
+    AF_POINTS_LOW = 5000     # Threshold to slow processing
+    AF_POINT_NOEXEC = 500    # Threshold to stop processing
+    AF_NOEXEC_CKTIME = 3600  # Check interval when stopped
+    
+    # Cache settings (days)
+    DNS_DOMAIN_INFO_MAX_AGE = 30   # Domain cache age
+    DOMAIN_TAG_INFO_MAX_AGE = 120  # Tag cache age
+    
+    # AutoFocus query timeouts
+    AF_LOOKUP_TIMEOUT = 2           # Timeout in minutes
+    AF_LOOKUP_MAX_PERCENTAGE = 20   # Min completion percentage
+    ```
+  </Tab>
+  
+  <Tab title="ElasticStack Settings">
+    ```python
+    # Elasticsearch configuration
+    ELASTICSEARCH_HOST = "localhost"
+    ELASTICSEARCH_PORT = "9200"
+    ELASTICSEARCH_HTTP_AUTH = ""  # Leave empty for no auth
+    
+    # Kibana configuration  
+    KIBANA_HOST = "localhost"
+    KIBANA_PORT = "5601"
+    ```
+  </Tab>
+  
+  <Tab title="Logging Settings">
+    ```python
+    # Application logging
+    LOG_LEVEL = "INFO"        # DEBUG, INFO, WARNING, ERROR
+    LOG_SIZE = 1000000000     # 1GB before rotation
+    LOG_BACKUPS = 10          # Keep 10 rotated logs
+    
+    # Flask debug mode
+    DEBUG = False             # Set True for development only
+    ```
+  </Tab>
+</Tabs>
+
+### 2. Elasticsearch Configuration
+
+The setup script configures Elasticsearch, but you may want to tune these settings:
+
+#### JVM Heap Size
+
+Edit `/etc/elasticsearch/jvm.options`:
+
+```bash
+sudo nano /etc/elasticsearch/jvm.options
+```
+
+Set heap size to 50% of available RAM (max 32GB):
+
+```
+-Xms8g
+-Xmx8g
+```
+
+#### Elasticsearch YAML Configuration
+
+Key settings in `/etc/elasticsearch/elasticsearch.yml`:
+
+```yaml
+# Cluster name
+cluster.name: safenetworking
+
+# Node name
+node.name: sfn-node-1
+
+# Data and logs paths
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+
+# Backup repository
+path.repo: ["/home/yourusername/es_backup"]
+
+# Network settings
+network.host: localhost
+http.port: 9200
+
+# Discovery (single node)
+discovery.type: single-node
+
+# Memory locking
+bootstrap.memory_lock: true
+```
+
+Restart Elasticsearch after changes:
+
+```bash
+sudo systemctl restart elasticsearch
+```
+
+### 3. Logstash Configuration
+
+Logstash uses separate pipelines for different log types. Configuration files are in `/etc/logstash/pipelines/`.
+
+#### Pipeline Configuration
+
+The setup script installs these pipelines (configured in `/etc/logstash/pipelines.yml`):
+
+```yaml
+- pipeline.id: dns-threat
+  path.config: "/etc/logstash/pipelines/dns_threat.conf"
+  pipeline.workers: 2
+  
+- pipeline.id: iot-threat
+  path.config: "/etc/logstash/pipelines/iot_threat.conf"
+  pipeline.workers: 2
+  
+- pipeline.id: gtp-sctp
+  path.config: "/etc/logstash/pipelines/gtp_sctp.conf"
+  pipeline.workers: 2
+```
+
+#### JVM Settings
+
+Edit `/etc/logstash/jvm.options` to set heap size:
+
+```
+-Xms2g
+-Xmx2g
+```
+
+Restart Logstash:
+
+```bash
+sudo systemctl restart logstash
+```
+
+### 4. Kibana Configuration
+
+Kibana configuration is in `/etc/kibana/kibana.yml`:
+
+```yaml
+# Server settings
+server.port: 5601
+server.host: "0.0.0.0"  # Change to specific IP for security
+
+# Elasticsearch connection
+elasticsearch.hosts: ["http://localhost:9200"]
+
+# Kibana index
+kibana.index: ".kibana"
+```
+
+Restart Kibana:
+
+```bash
+sudo systemctl restart kibana
+```
+
+## Python Virtual Environment
+
+The setup script creates a Python virtual environment in `~/safe-networking/.env/`.
+
+### Activate Virtual Environment
+
+```bash
+cd ~/safe-networking
+source .env/bin/activate
+```
+
+### Verify Dependencies
+
+```bash
+pip list
+```
+
+You should see packages including:
+
+- click==6.7
+- elasticsearch==7.0.0
+- elasticsearch-dsl==7.0.0
+- Flask==0.12.4
+- requests==2.21.0
+
+### Update Dependencies
+
+If needed, update to the latest compatible versions:
+
+```bash
+pip install --upgrade -r requirements.txt
+```
+
+## Service Management
+
+### Enable Services at Boot
+
+Ensure all services start automatically:
+
+```bash
+sudo systemctl enable elasticsearch
+sudo systemctl enable logstash  
+sudo systemctl enable kibana
+```
+
+### Service Control Commands
+
+```bash
+# Elasticsearch
+sudo systemctl start elasticsearch
+sudo systemctl stop elasticsearch
+sudo systemctl status elasticsearch
+sudo systemctl restart elasticsearch
+
+# Logstash
+sudo systemctl start logstash
+sudo systemctl stop logstash
+sudo systemctl status logstash
+sudo systemctl restart logstash
+
+# Kibana
+sudo systemctl start kibana
+sudo systemctl stop kibana
+sudo systemctl status kibana
+sudo systemctl restart kibana
+```
+
+## Verification
+
+### 1. Verify ElasticStack Components
+
+<Steps>
+  <Step title="Check Elasticsearch">
+    ```bash
+    curl http://localhost:9200
+    ```
+    
+    Expected response:
+    ```json
+    {
+      "name" : "sfn-node-1",
+      "cluster_name" : "safenetworking",
+      "version" : {
+        "number" : "7.1.1",
+        "build_flavor" : "default"
+      },
+      "tagline" : "You Know, for Search"
+    }
+    ```
+  </Step>
+  
+  <Step title="Verify Elasticsearch Settings">
+    Check max file descriptors (should be 65535):
+    ```bash
+    curl -X GET "localhost:9200/_nodes/stats/process?filter_path=**.max_file_descriptors"
+    ```
+    
+    Check memory lock (should be false - meaning mlockall succeeded):
+    ```bash
+    curl -X GET "localhost:9200/_nodes?filter_path=**.mlockall"
+    ```
+  </Step>
+  
+  <Step title="Check Logstash">
+    Verify Logstash is listening on UDP 5514:
+    ```bash
+    sudo netstat -tuln | grep 5514
+    ```
+    
+    Expected output:
+    ```
+    udp6   0   0 :::5514   :::*
+    ```
+  </Step>
+  
+  <Step title="Check Kibana">
+    ```bash
+    curl http://localhost:5601
+    ```
+    
+    Should return HTML or redirect response.
+  </Step>
+</Steps>
+
+### 2. Verify Index Mappings
+
+Check that index templates were created:
+
+```bash
+# List all indices
+curl -X GET "localhost:9200/_cat/indices?v"
+
+# Check threat template
+curl -X GET "localhost:9200/_template/threat?pretty"
+
+# Check specific indices
+curl -X GET "localhost:9200/af-details?pretty"
+curl -X GET "localhost:9200/sfn-domain-details?pretty"
+curl -X GET "localhost:9200/sfn-tag-details?pretty"
+curl -X GET "localhost:9200/sfn-iot-details?pretty"
+```
+
+### 3. Test SafeNetworking CLI
+
+Verify the SafeNetworking CLI is working:
+
+```bash
+cd ~/safe-networking
+./sfn version
+```
+
+Expected output:
+```
+v4.0
+```
+
+### 4. Verify Configuration File
+
+Check that `.panrc` is properly linked:
+
+```bash
+ls -la ~/safe-networking/project/.panrc
+```
+
+Should show a symlink to `~/.panrc`.
+
+### 5. Test SafeNetworking Start
+
+Perform a test start (press Ctrl+C to stop):
+
+```bash
+cd ~/safe-networking
+./sfn start
+```
+
+Watch for:
+
+<Accordion title="Expected Startup Messages">
+  ```
+  [INFO]    : 2019-06-15 10:30:15 : INIT - SafeNetworking application initializing with loglevel of DEBUG
+  [INFO]    : 2019-06-15 10:30:15 : ElasticSearch host is: localhost:9200
+  [INFO]    : 2019-06-15 10:30:15 : INIT - Starting with total proc count of 16
+  [INFO]    : 2019-06-15 10:30:17 : INIT - SafeNetworking server started @ localhost:5000
+  [INFO]    : 2019-06-15 10:30:17 : INIT - Background processes initialized
+  ```
+</Accordion>
+
+<Warning>
+If you see: `CRITICAL - API Key for Autofocus is not set in .panrc, exiting`
+
+You must configure your AutoFocus API key in `~/.panrc`.
+</Warning>
+
+## Kibana Setup
+
+### 1. Import Index Patterns
+
+Access Kibana at `http://<your-server-ip>:5601`
+
+<Steps>
+  <Step title="Create Index Patterns">
+    Navigate to **Management → Stack Management → Index Patterns**
+    
+    Create the following index patterns:
+    - Pattern: `threat-*`, Time field: `@timestamp`
+    - Pattern: `sfn-domain-details*`, Time field: `doc_created`
+    - Pattern: `sfn-tag-details*`, Time field: `doc_created`
+    - Pattern: `sfn-iot-details*`, Time field: `time.keyword`
+  </Step>
+  
+  <Step title="Import Visualizations and Dashboards">
+    Navigate to **Management → Stack Management → Saved Objects**
+    
+    Click **Import** and select:
+    ```
+    ~/safe-networking/install/kibana/export.json
+    ```
+    
+    When prompted, map the visualizations to the index patterns you created.
+  </Step>
+</Steps>
+
+### 2. Access Dashboards
+
+Navigate to **Dashboard** and you should see:
+
+- Safe Networking Overview
+- DNS Threat Analysis  
+- IoT Threat Detection
+- GTP/SCTP Events
+- Malware by Time
+
+## Firewall Configuration
+
+Configure your Palo Alto Networks firewall to send logs to SafeNetworking.
+
+### Syslog Profile
+
+Create a syslog server profile:
+
+```bash
+# Via CLI
+configure
+set shared log-settings syslog SafeNetworking server SafeNetworking-Server server <SafeNetworking-IP>
+set shared log-settings syslog SafeNetworking server SafeNetworking-Server transport UDP
+set shared log-settings syslog SafeNetworking server SafeNetworking-Server port 5514
+set shared log-settings syslog SafeNetworking server SafeNetworking-Server facility LOG_USER
+set shared log-settings syslog SafeNetworking server SafeNetworking-Server format Default
+commit
+```
+
+### Log Forwarding Profile
+
+Create log forwarding profiles for threat and traffic logs:
+
+```bash
+# Threat log forwarding
+set shared log-settings profiles DNS-Threat-Forwarding match-list dns-threats log-type threat filter "(category eq 'dns')"
+set shared log-settings profiles DNS-Threat-Forwarding match-list dns-threats send-syslog SafeNetworking
+
+# Apply to security policy
+set rulebase security rules <your-rule> log-setting DNS-Threat-Forwarding
+commit
+```
+
+## Post-Installation
+
+### Set Up Log Rotation
+
+Create a logrotate configuration for SafeNetworking:
+
+```bash
+sudo nano /etc/logrotate.d/safenetworking
+```
+
+Add:
+
+```
+/home/*/safe-networking/log/sfn.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 yourusername yourusername
+}
+```
+
+### Running SafeNetworking as a Service (Optional)
+
+<Accordion title="Create systemd Service">
+  Create `/etc/systemd/system/safenetworking.service`:
+  
+  ```ini
+  [Unit]
+  Description=SafeNetworking Threat Intelligence Platform
+  After=network.target elasticsearch.service logstash.service
+  Requires=elasticsearch.service logstash.service
+  
+  [Service]
+  Type=simple
+  User=yourusername
+  WorkingDirectory=/home/yourusername/safe-networking
+  ExecStart=/home/yourusername/safe-networking/.env/bin/python /home/yourusername/safe-networking/sfn start
+  Restart=on-failure
+  RestartSec=10
+  
+  [Install]
+  WantedBy=multi-user.target
+  ```
+  
+  Enable and start:
+  ```bash
+  sudo systemctl daemon-reload
+  sudo systemctl enable safenetworking
+  sudo systemctl start safenetworking
+  sudo systemctl status safenetworking
+  ```
+</Accordion>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Elasticsearch won't start">
+    **Check logs**:
+    ```bash
+    sudo journalctl -u elasticsearch -n 100
+    ```
+    
+    **Common issues**:
+    - Insufficient memory (increase JVM heap or system RAM)
+    - Port 9200 already in use
+    - File descriptor limits not applied (reboot may be required)
+    - Disk space exhausted
+  </Accordion>
+  
+  <Accordion title="Logstash won't start or not listening on 5514">
+    **Check logs**:
+    ```bash
+    sudo tail -f /var/log/logstash/logstash-plain.log
+    ```
+    
+    **Common issues**:
+    - Configuration syntax errors in pipeline files
+    - Elasticsearch not reachable
+    - Port 5514 requires CAP_NET_BIND_SERVICE capability for non-root
+  </Accordion>
+  
+  <Accordion title="SafeNetworking can't connect to Elasticsearch">
+    **Verify connectivity**:
+    ```bash
+    curl http://localhost:9200
+    ```
+    
+    **Check `.panrc` settings**:
+    ```python
+    ELASTICSEARCH_HOST = "localhost"
+    ELASTICSEARCH_PORT = "9200"
+    ```
+  </Accordion>
+  
+  <Accordion title="Index mapping errors">
+    If index mappings weren't created properly:
+    
+    ```bash
+    # Re-run mapping installation
+    cd ~/safe-networking/install/elasticsearch/mappings
+    
+    # Delete and recreate indices
+    curl -X DELETE "localhost:9200/af-details"
+    curl -XPUT -H'Content-Type: application/json' \
+      'http://localhost:9200/af-details/' \
+      -d @af-details.json
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Performance Tuning
+
+### Elasticsearch Tuning
+
+<Tabs>
+  <Tab title="Index Settings">
+    Adjust replica count (set to 0 for single-node deployments):
+    ```bash
+    curl -XPUT -H'Content-Type: application/json' 'localhost:9200/_settings' \
+      -d '{"index" : {"number_of_replicas" : 0}}'
+    ```
+  </Tab>
+  
+  <Tab title="Shard Allocation">
+    For large deployments, adjust shard settings in index templates:
+    ```json
+    {
+      "settings": {
+        "number_of_shards": 3,
+        "number_of_replicas": 1
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Index Lifecycle">
+    Implement index lifecycle management to automatically delete old indices:
+    ```bash
+    # Delete indices older than 90 days
+    curator_cli --host localhost delete indices \
+      --filter_list '[{"filtertype":"age","source":"name","timestring":"%Y.%m","unit":"months","unit_count":3}]'
+    ```
+  </Tab>
+</Tabs>
+
+### SafeNetworking Tuning
+
+Adjust processing parameters in `~/.panrc`:
+
+```python
+# Reduce concurrent processors if hitting AutoFocus rate limits
+DNS_POOL_COUNT = 8
+
+# Increase pool time to reduce API calls
+DNS_POOL_TIME = 10
+
+# Increase cache age to reduce AutoFocus queries
+DNS_DOMAIN_INFO_MAX_AGE = 60
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="gears">
+    Explore all configuration options and advanced settings.
+  </Card>
+  
+  <Card title="Dashboard Guide" icon="chart-line">
+    Learn how to use the Kibana dashboards for threat analysis.
+  </Card>
+  
+  <Card title="API Reference" icon="code">
+    Integrate SafeNetworking with your automation workflows.
+  </Card>
+  
+  <Card title="Troubleshooting" icon="wrench">
+    Common issues and solutions for SafeNetworking deployments.
+  </Card>
+</CardGroup>
+
+<Note>
+For production deployments, consider implementing additional security measures such as TLS encryption for Elasticsearch, Kibana authentication, firewall rules, and regular backup procedures.
+</Note>

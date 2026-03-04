@@ -1,0 +1,287 @@
+---
+title: 'sfn load'
+description: 'Load CSV files into ElasticSearch as documents'
+---
+
+## Overview
+
+The `sfn load` command provides a convenient way to bulk-load CSV data into ElasticSearch indices. This is useful for importing threat intelligence feeds, historical data, or custom datasets into SafeNetworking.
+
+## Command Syntax
+
+```bash
+sfn load <csvfile> <index>
+```
+
+## Description
+
+This command reads a CSV file and uses ElasticSearch's bulk API to efficiently load all rows as documents into the specified index. The CSV headers are automatically mapped to document field names.
+
+## Arguments
+
+<ParamField path="csvfile" type="string" required>
+  Path to the CSV file to be loaded into ElasticSearch.
+  
+  **Required:** Yes
+  
+  **Format:** Must be a valid CSV file with headers in the first row
+  
+  **Example:** `threat_data.csv` or `/path/to/data.csv`
+</ParamField>
+
+<ParamField path="index" type="string" required>
+  Name of the ElasticSearch index where documents will be stored.
+  
+  **Required:** Yes
+  
+  **Convention:** Use lowercase with hyphens (e.g., `sfn-custom-data`)
+  
+  **Example:** `sfn-threat-intel`
+</ParamField>
+
+## CSV File Format
+
+The CSV file must have:
+
+1. **Header row** - First row containing field names
+2. **Data rows** - Subsequent rows with corresponding values
+3. **Proper escaping** - Commas and quotes properly escaped per CSV standards
+
+### Example CSV Structure
+
+```csv
+ip,domain,threat_type,severity,timestamp
+192.0.2.15,malicious.com,C2 Server,high,2026-03-01T10:30:00Z
+198.51.100.42,phishing.net,Phishing,medium,2026-03-02T14:22:00Z
+203.0.113.87,botnet.org,Botnet,critical,2026-03-03T08:15:00Z
+```
+
+## Usage Examples
+
+### Load Threat Intelligence Feed
+
+Import a threat intelligence CSV into a custom index:
+
+```bash
+sfn load threat_intel.csv sfn-threat-intel
+```
+
+### Load Historical DNS Data
+
+Import historical DNS query logs:
+
+```bash
+sfn load historical_dns.csv sfn-dns-historical
+```
+
+### Load Custom IoT Data
+
+Import additional IoT threat data from an external source:
+
+```bash
+sfn load custom_iot_threats.csv sfn-iot-custom
+```
+
+### Load with Absolute Path
+
+Import a file from a specific directory:
+
+```bash
+sfn load /var/data/imports/malware_indicators.csv sfn-malware-intel
+```
+
+## Expected Output
+
+The command performs a bulk load operation. Upon successful completion:
+
+- No output is displayed to the console
+- All CSV rows are inserted as documents in ElasticSearch
+- The index is created automatically if it doesn't exist
+
+### Verifying the Load
+
+After loading, verify the data using ElasticSearch queries or Kibana:
+
+```bash
+# Check document count (using curl)
+curl -X GET "localhost:9200/sfn-threat-intel/_count?pretty"
+
+# View sample documents
+curl -X GET "localhost:9200/sfn-threat-intel/_search?size=5&pretty"
+```
+
+## Document Mapping
+
+Each CSV row becomes an ElasticSearch document:
+
+### CSV Input
+```csv
+ip,domain,threat_type
+192.0.2.15,malicious.com,C2 Server
+```
+
+### ElasticSearch Document
+```json
+{
+  "_index": "sfn-threat-intel",
+  "_type": "type",
+  "_source": {
+    "ip": "192.0.2.15",
+    "domain": "malicious.com",
+    "threat_type": "C2 Server"
+  }
+}
+```
+
+## Common Use Cases
+
+### Import OSINT Threat Feeds
+
+Load open-source threat intelligence feeds:
+
+```bash
+# Download and load abuse.ch feed
+wget https://example.com/threatfeed.csv
+sfn load threatfeed.csv sfn-osint-threats
+```
+
+### Migrate Data Between Environments
+
+Transfer data from development to production:
+
+```bash
+# Export from dev (using sfn admin)
+sfn admin --datadump --index sfn-custom-data --outfile export.txt
+
+# Convert and load to production
+# (requires conversion from Python dict format to CSV)
+sfn load converted_data.csv sfn-custom-data
+```
+
+### Load Historical Analysis Results
+
+Import previously analyzed security data:
+
+```bash
+sfn load analysis_results_2025.csv sfn-historical-analysis
+```
+
+### Bulk Import Customer Data
+
+Service providers can load customer-specific threat data:
+
+```bash
+sfn load customer_acme_threats.csv sfn-customer-acme-threats
+```
+
+## Error Handling
+
+### File Not Found
+
+```bash
+sfn load nonexistent.csv sfn-test
+# Error: [Errno 2] No such file or directory: 'nonexistent.csv'
+```
+
+**Solution:** Verify the file path and ensure the file exists
+
+### Invalid CSV Format
+
+If the CSV is malformed:
+
+```bash
+sfn load invalid.csv sfn-test
+# May cause parsing errors or incomplete loads
+```
+
+**Solution:** Validate CSV format using a CSV linter or spreadsheet application
+
+### ElasticSearch Connection Issues
+
+If ElasticSearch is unavailable:
+
+```bash
+sfn load data.csv sfn-test
+# Error: ConnectionError - unable to reach ElasticSearch
+```
+
+**Solution:** Ensure ElasticSearch is running and accessible at the configured host:port
+
+## Performance Considerations
+
+<Info>
+  The command uses ElasticSearch's `helpers.bulk()` API for efficient batch loading, which is optimized for large datasets.
+</Info>
+
+<Tip>
+  For very large CSV files (>1GB), consider splitting into smaller chunks to avoid memory issues.
+</Tip>
+
+### Optimal File Sizes
+
+- **Small:** < 10MB - Loads instantly
+- **Medium:** 10MB - 100MB - Loads in seconds
+- **Large:** 100MB - 1GB - May take minutes
+- **Very Large:** > 1GB - Consider chunking
+
+## Best Practices
+
+### Index Naming Convention
+
+Follow SafeNetworking naming patterns:
+
+```bash
+sfn load data.csv sfn-<category>-<type>
+
+# Good examples:
+sfn load threats.csv sfn-threat-intel
+sfn load dns_logs.csv sfn-dns-historical
+sfn load iot_data.csv sfn-iot-custom
+
+# Avoid:
+sfn load data.csv MyCustomIndex  # Not lowercase
+sfn load data.csv custom_data    # Missing sfn prefix
+```
+
+### Data Validation
+
+Validate CSV data before loading:
+
+```bash
+# Check CSV structure
+head -n 5 data.csv
+
+# Verify row count
+wc -l data.csv
+
+# Check for proper formatting
+csv-lint data.csv
+```
+
+### Backup Before Loading
+
+If loading into an existing index:
+
+```bash
+# Backup existing data first
+sfn admin --datadump --index sfn-threat-intel --outfile backup_$(date +%Y%m%d).txt
+
+# Then load new data
+sfn load new_data.csv sfn-threat-intel
+```
+
+## Notes
+
+<Warning>
+  Loading data into an existing index will add documents without removing existing ones. Use ElasticSearch APIs to delete the index first if you need a clean slate.
+</Warning>
+
+<Note>
+  All documents are stored with the document type `"type"` as per ElasticSearch conventions in use by SafeNetworking.
+</Note>
+
+## Related Commands
+
+- [`sfn admin`](/cli/admin) - Export data from ElasticSearch indices
+- [`sfn start`](/cli/start) - Start SafeNetworking to process loaded data
+- [`sfn iot`](/cli/iot) - Query IoT threat intelligence data

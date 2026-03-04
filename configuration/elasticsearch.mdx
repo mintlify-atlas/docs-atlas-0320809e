@@ -1,0 +1,444 @@
+---
+title: 'Elasticsearch Configuration'
+description: 'Configure Elasticsearch for SafeNetworking threat data storage and indexing'
+---
+
+## Overview
+
+Elasticsearch is the primary datastore for SafeNetworking, storing threat logs, domain intelligence, tag information, and enriched event data. This guide covers Elasticsearch configuration, index management, and backup settings.
+
+## Connection Settings
+
+Elasticsearch connection settings are configured in the `.panrc` file in your home directory.
+
+### Host and Port Configuration
+
+```python
+# Elasticsearch connection settings
+ELASTICSEARCH_HOST = "localhost"
+ELASTICSEARCH_PORT = "9200"
+```
+
+**Default Configuration:**
+- **Host:** `localhost` (all components on same system)
+- **Port:** `9200` (standard Elasticsearch HTTP port)
+- **Protocol:** HTTP
+
+<Info>
+For production deployments, you can point to a remote Elasticsearch cluster by changing `ELASTICSEARCH_HOST` to the cluster IP or hostname.
+</Info>
+
+### Authentication
+
+If your Elasticsearch cluster requires authentication:
+
+```python
+# HTTP Basic Auth (format: "username:password")
+ELASTICSEARCH_HTTP_AUTH = "elastic:changeme"
+```
+
+**Default:** Empty string (no authentication)
+
+<Warning>
+If using authentication, always use strong passwords and secure the `.panrc` file with appropriate permissions (`chmod 600 ~/.panrc`).
+</Warning>
+
+### Application Configuration
+
+These settings are defined in `project/__init__.py` and loaded from `.panrc`:
+
+```python
+# In project/__init__.py
+app.config['ELASTICSEARCH_HOST'] = "localhost"
+app.config['ELASTICSEARCH_PORT'] = "9200"
+app.config['ELASTICSEARCH_HTTP_AUTH'] = ""
+
+# Create Elasticsearch connection
+es = Elasticsearch(f"{app.config['ELASTICSEARCH_HOST']}:{app.config['ELASTICSEARCH_PORT']}")
+connections.create_connection(hosts=[app.config['ELASTICSEARCH_HOST']])
+```
+
+## Elasticsearch System Configuration
+
+The main Elasticsearch configuration file is located at:
+
+```bash
+/etc/elasticsearch/elasticsearch.yml
+```
+
+### Cluster and Node Settings
+
+```yaml
+# Cluster name
+cluster.name: safe-networking
+
+# Node name (uses hostname by default)
+node.name: ${HOSTNAME}
+```
+
+### Data and Log Paths
+
+```yaml
+# Path to store index data
+path.data: /var/lib/elasticsearch
+
+# Path to store logs
+path.logs: /var/log/elasticsearch
+
+# Path to backup repository
+path.repo: /home/username/es_backup
+```
+
+<Note>
+The `path.repo` setting is automatically configured during installation using the `setup.sh` script, which substitutes your home directory path.
+</Note>
+
+### Network Settings
+
+```yaml
+# HTTP port for REST API
+http.port: 9200
+
+# Bind to specific IP (commented out = localhost only)
+# network.host: 0.0.0.0
+```
+
+<Warning>
+**Security:** By default, Elasticsearch only listens on localhost. Only bind to `0.0.0.0` if you need remote access, and ensure proper firewall rules are in place.
+</Warning>
+
+### Performance Tuning
+
+```yaml
+# Search queue size (increased for SafeNetworking workload)
+thread_pool.search.queue_size: 10000
+```
+
+This setting prevents "courier fetch" errors in Kibana visualizations by increasing the search queue size from the default.
+
+## Memory Configuration
+
+JVM heap size is configured in `/etc/elasticsearch/jvm.options`.
+
+### Heap Size Settings
+
+```bash
+# Initial and maximum heap size (should always match)
+-Xms2g
+-Xmx2g
+```
+
+**Default:** 2GB heap size
+
+<Tip>
+**Best Practice:** Set heap size to approximately 50% of available system RAM, but no more than 31GB. Always set `-Xms` and `-Xmx` to the same value.
+</Tip>
+
+### Memory Lock Settings
+
+Heap memory locking can be enabled to prevent swapping:
+
+```yaml
+# In elasticsearch.yml (commented out by default)
+# bootstrap.memory_lock: true
+```
+
+If enabled, configure system limits in `/etc/security/limits.conf`:
+
+```bash
+elasticsearch  -  memlock unlimited
+elasticsearch  -  nofile 65535
+elasticsearch  -  noproc 4096
+```
+
+### Verifying Memory Settings
+
+After starting Elasticsearch, verify settings:
+
+```bash
+# Check max file descriptors (should be 65535)
+curl -X GET "localhost:9200/_nodes/stats/process?filter_path=**.max_file_descriptors"
+
+# Check memory lock status (should be false if not enabled)
+curl -X GET "localhost:9200/_nodes?filter_path=**.mlockall"
+```
+
+## Index Patterns and Mappings
+
+SafeNetworking uses several Elasticsearch indices with custom mappings.
+
+### Index Structure
+
+| Index Pattern | Purpose | Time-based |
+|--------------|---------|------------|
+| `threat-*` | Threat logs from PAN-OS firewalls | Yes (monthly) |
+| `traffic-*` | Traffic logs (disabled by default) | Yes (monthly) |
+| `system-*` | System logs from PAN-OS | Yes (monthly) |
+| `config-*` | Configuration change logs | Yes (monthly) |
+| `iot-*` | IoT threat detection logs | Yes (monthly) |
+| `af-details` | AutoFocus sample details | No |
+| `sfn-domain-details` | Cached domain intelligence | No |
+| `sfn-tag-details` | AutoFocus tag information | No |
+| `sfn-iot-details` | IoT malware lookup data | No |
+
+### Installing Index Mappings
+
+Index mappings are automatically installed by the `setup.sh` script:
+
+```bash
+# Threat log template mapping
+curl -XPUT -H'Content-Type: application/json' \
+    'http://localhost:9200/_template/threat?pretty' \
+    -d @./elasticsearch/mappings/threat_template_mapping.json
+
+# AutoFocus details index
+curl -XPUT -H'Content-Type: application/json' \
+    'http://localhost:9200/af-details/' \
+    -d @./elasticsearch/mappings/af-details.json
+
+# Domain details index
+curl -XPUT -H'Content-Type: application/json' \
+    'http://localhost:9200/sfn-domain-details/' \
+    -d @./elasticsearch/mappings/sfn-domain-details.json
+
+# Tag details index
+curl -XPUT -H'Content-Type: application/json' \
+    'http://localhost:9200/sfn-tag-details/' \
+    -d @./elasticsearch/mappings/sfn-tag-details.json
+```
+
+### Key Field Mappings
+
+The threat log mapping includes important fields:
+
+```json
+{
+  "properties": {
+    "SourceIP": { "type": "ip" },
+    "DestinationIP": { "type": "ip" },
+    "SourceIPGeo": {
+      "properties": {
+        "location": { "type": "geo_point" },
+        "latitude": { "type": "half_float" },
+        "longitude": { "type": "half_float" }
+      }
+    },
+    "SFN": {
+      "properties": {
+        "domain_name": { "type": "text" },
+        "threat_name": { "type": "text" },
+        "confidence_level": { "type": "long" },
+        "processed": { "type": "text" }
+      }
+    }
+  }
+}
+```
+
+### Replica Configuration
+
+For single-node deployments, replicas are disabled:
+
+```bash
+curl -XPUT -H'Content-Type: application/json' 'localhost:9200/_settings' \
+    -d '{"index" : {"number_of_replicas" : 0}}'
+```
+
+<Info>
+For production clusters with multiple nodes, increase the replica count for high availability.
+</Info>
+
+## Backup Configuration
+
+SafeNetworking creates a backup directory for Elasticsearch snapshots.
+
+### Backup Directory Setup
+
+The setup script creates and configures the backup directory:
+
+```bash
+# Create backup directory with proper permissions
+install -d -m 0777 -o $userName -g $(id -gn $userName) $userHome/es_backup
+```
+
+**Location:** `~/es_backup`
+
+**Permissions:** `0777` (world-writable, required for Elasticsearch access)
+
+### Repository Registration
+
+Register the backup repository in Elasticsearch:
+
+```bash
+curl -XPUT 'http://localhost:9200/_snapshot/backup_repo' -H 'Content-Type: application/json' -d '{
+  "type": "fs",
+  "settings": {
+    "location": "/home/username/es_backup",
+    "compress": true
+  }
+}'
+```
+
+### Creating Snapshots
+
+Create a snapshot of all indices:
+
+```bash
+curl -XPUT 'http://localhost:9200/_snapshot/backup_repo/snapshot_1?wait_for_completion=true'
+```
+
+Create a snapshot of specific indices:
+
+```bash
+curl -XPUT 'http://localhost:9200/_snapshot/backup_repo/threat_backup' -H 'Content-Type: application/json' -d '{
+  "indices": "threat-*,af-details,sfn-domain-details",
+  "ignore_unavailable": true,
+  "include_global_state": false
+}'
+```
+
+### Restoring from Backup
+
+```bash
+curl -XPOST 'http://localhost:9200/_snapshot/backup_repo/snapshot_1/_restore'
+```
+
+<Warning>
+Ensure sufficient disk space in the backup directory. Snapshots can consume significant storage depending on index size.
+</Warning>
+
+## System Tuning
+
+The setup script configures system settings for optimal Elasticsearch performance.
+
+### System Limits
+
+Configured in `/etc/security/limits.conf`:
+
+```bash
+# Memory lock
+elasticsearch  -  memlock unlimited
+
+# Maximum open files
+elasticsearch  -  nofile 65535
+
+# Maximum processes
+elasticsearch  -  noproc 4096
+```
+
+### Virtual Memory
+
+Configured in `/etc/sysctl.conf`:
+
+```bash
+# Maximum memory map areas
+vm.max_map_count=262144
+```
+
+Apply the setting:
+
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
+
+## Service Management
+
+Elasticsearch runs as a systemd service.
+
+### Enable and Start Service
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable elasticsearch.service
+sudo systemctl start elasticsearch.service
+```
+
+### Check Service Status
+
+```bash
+# Service status
+sudo systemctl status elasticsearch.service
+
+# Check if Elasticsearch is responding
+curl http://localhost:9200
+
+# Check cluster health
+curl http://localhost:9200/_cluster/health?pretty
+```
+
+### View Logs
+
+```bash
+# Service logs
+sudo journalctl -u elasticsearch.service -f
+
+# Elasticsearch logs
+tail -f /var/log/elasticsearch/safe-networking.log
+```
+
+## Elasticsearch Version
+
+SafeNetworking is tested with Elasticsearch 6.4:
+
+```python
+ELASTICSTACK_VERSION = "6.4"
+```
+
+<Note>
+Index mappings are version-specific. The `install/elasticsearch/mappings/ES-6.x/` directory contains mappings for Elasticsearch 6.x.
+</Note>
+
+## Troubleshooting
+
+### Connection Refused
+
+**Symptom:** Cannot connect to Elasticsearch
+
+**Solutions:**
+- Check if service is running: `sudo systemctl status elasticsearch`
+- Verify port is listening: `sudo netstat -tlnp | grep 9200`
+- Check logs: `tail -f /var/log/elasticsearch/*.log`
+- Wait 10-15 seconds after starting (Elasticsearch takes time to initialize)
+
+### Out of Memory
+
+**Symptom:** Elasticsearch crashes or becomes unresponsive
+
+**Solutions:**
+- Increase heap size in `/etc/elasticsearch/jvm.options`
+- Reduce index size by deleting old indices
+- Add more system RAM
+- Disable replicas on single-node setups
+
+### Courier Fetch Errors in Kibana
+
+**Symptom:** Kibana visualizations show courier fetch errors
+
+**Solution:** Increase search queue size in `elasticsearch.yml`:
+
+```yaml
+thread_pool.search.queue_size: 10000
+```
+
+### Disk Space Issues
+
+**Symptom:** Elasticsearch enters read-only mode
+
+**Solutions:**
+- Delete old indices: `curl -XDELETE http://localhost:9200/threat-2020.01`
+- Increase disk space
+- Configure index lifecycle management (ILM) policies
+
+## Related Configuration
+
+- [AutoFocus API Configuration](/configuration/autofocus-api) - Configure threat intelligence source
+- [Logstash Pipelines](/configuration/logstash-pipelines) - Configure data ingestion
+
+## Source References
+
+Configuration files:
+- `project/__init__.py:164-169` - Application connection settings
+- `install/elasticsearch/config/elasticsearch_template.yml` - Main configuration template
+- `install/elasticsearch/config/jvm.options` - JVM memory settings
+- `install/elasticsearch/mappings/` - Index mapping definitions
+- `install/setup.sh:48-151` - Automated setup script

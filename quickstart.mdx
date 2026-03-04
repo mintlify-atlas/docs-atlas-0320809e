@@ -1,80 +1,344 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get SafeNetworking up and running quickly with this step-by-step guide
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will help you get SafeNetworking up and running quickly. You'll configure the basic components, set up your AutoFocus API key, and verify that the system is processing events.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+If you received a pre-installed VM from your Palo Alto Networks account team, it comes ready to go and you can skip most of these steps. You'll only need to configure your AutoFocus API key and firewall syslog settings.
 </Note>
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+<Steps>
+  <Step title="System Requirements">
+    - Ubuntu 18.04 LTS or compatible Linux distribution
+    - Minimum 8GB RAM (16GB recommended)
+    - Python 3.6 or higher
+    - Root or sudo access
+  </Step>
+  
+  <Step title="Required Accounts">
+    - Palo Alto Networks AutoFocus subscription
+    - AutoFocus API key (obtainable from the AutoFocus portal)
+  </Step>
+  
+  <Step title="Network Access">
+    - Firewall can send syslog to SafeNetworking system on UDP port 5514
+    - SafeNetworking system can reach autofocus.paloaltonetworks.com (HTTPS)
+  </Step>
+</Steps>
+
+## Installation
+
+### 1. Clone the Repository
+
+```bash
+cd ~
+git clone https://github.com/PaloAltoNetworks/safe-networking.git
+cd safe-networking
+```
+
+### 2. Run the Setup Script
+
+The `setup.sh` script automates the installation of ElasticStack components and SafeNetworking configuration.
+
+```bash
+sudo ./install/setup.sh
+```
+
+This script will:
+
+- Create necessary directories (`~/es_backup` for Elasticsearch backups)
+- Set up Python virtual environment in `.env/`
+- Install Python dependencies from `requirements.txt`
+- Configure Elasticsearch, Logstash, and Kibana
+- Set system limits for Elasticsearch
+- Install index mappings and templates
+- Enable services to start on boot
+
+<Warning>
+The setup script will modify system configuration files in `/etc/elasticsearch/`, `/etc/logstash/`, and `/etc/kibana/`. Backups are created automatically with timestamps.
+</Warning>
+
+### 3. Configure AutoFocus API Key
+
+Edit the `.panrc` configuration file in your home directory:
+
+```bash
+nano ~/.panrc
+```
+
+Add your AutoFocus API key:
+
+```python
+# API Key for Autofocus
+AUTOFOCUS_API_KEY = "your-api-key-here"
+```
+
+<Tip>
+You can obtain your AutoFocus API key by logging into the AutoFocus portal and navigating to Settings → API Key.
+</Tip>
+
+### 4. Verify ElasticStack Services
+
+Check that all services are running:
+
+```bash
+# Check Elasticsearch
+curl http://localhost:9200
+
+# Check Logstash is listening
+netstat -tuln | grep 5514
+
+# Check Kibana
+curl http://localhost:5601
+```
+
+Expected responses:
+
+- **Elasticsearch**: JSON response with cluster information
+- **Logstash**: UDP port 5514 should be listening
+- **Kibana**: HTTP 200 response or redirect
+
+## Configure Your Firewall
+
+Configure your Palo Alto Networks firewall to send syslog events to SafeNetworking.
+
+### Syslog Server Configuration
+
+<Steps>
+  <Step title="Add Syslog Server Profile">
+    Navigate to **Device → Server Profiles → Syslog** and create a new profile:
+    
+    - Name: `SafeNetworking`
+    - Server: IP address of your SafeNetworking system
+    - Port: `5514`
+    - Facility: `LOG_USER`
+    - Format: `Default`
+  </Step>
+  
+  <Step title="Configure Log Forwarding">
+    Navigate to **Objects → Log Forwarding** and create profiles for:
+    
+    - **Threat Logs**: Forward DNS threat logs to SafeNetworking syslog profile
+    - **Traffic Logs**: (Optional) Forward traffic logs for additional context
+  </Step>
+  
+  <Step title="Apply to Security Policies">
+    Edit your security policies to use the log forwarding profile.
+  </Step>
+</Steps>
+
+### Example Syslog Configuration
+
+```xml
+<entry name="SafeNetworking">
+  <server>
+    <entry name="SafeNetworking-Server">
+      <server>192.168.1.100</server>
+      <transport>UDP</transport>
+      <port>5514</port>
+      <format>Default</format>
+      <facility>LOG_USER</facility>
+    </entry>
+  </server>
+</entry>
+```
+
+## Start SafeNetworking
+
+Now you're ready to start the SafeNetworking application.
+
+### Start the Application
+
+```bash
+cd ~/safe-networking
+./sfn start
+```
+
+You should see output similar to:
+
+```
+[INFO]    : 2019-06-15 10:30:15 : sfn:start:[46]:140234567890 : INIT - SafeNetworking application initializing with loglevel of DEBUG
+[INFO]    : 2019-06-15 10:30:15 : sfn:start:[48]:140234567890 : ElasticSearch host is: localhost:9200
+[INFO]    : 2019-06-15 10:30:15 : sfn:initBackgroundProcs:[192]:140234567890 : INIT - Starting with total proc count of 16
+[INFO]    : 2019-06-15 10:30:17 : sfn:initProcs:[200]:140234567891 : INIT - SafeNetworking server started @ localhost:5000
+[INFO]    : 2019-06-15 10:30:17 : sfn:start:[46]:140234567890 : INIT - Background processes initialized
+```
+
+<Note>
+The application will continue running in the foreground. To run it in the background, use `nohup ./sfn start &` or set up a systemd service.
+</Note>
+
+### Verify Processing
+
+Check the SafeNetworking log file:
+
+```bash
+tail -f ~/safe-networking/log/sfn.log
+```
+
+You should see log entries indicating:
+
+- Background processes initialized
+- DNS processing routines started
+- AutoFocus point totals being queried
+- Events being processed (once firewall logs arrive)
+
+## Access Kibana Dashboards
+
+Once SafeNetworking is running and processing events, you can view the data in Kibana.
+
+### Import Visualizations
+
+<Steps>
+  <Step title="Access Kibana">
+    Open your browser and navigate to: `http://<your-server-ip>:5601`
+  </Step>
+  
+  <Step title="Create Index Patterns">
+    Go to **Management → Index Patterns** and create patterns for:
+    
+    - `threat-*`
+    - `sfn-domain-details*`
+    - `sfn-tag-details*`
+    - `sfn-iot-details*` (if using IoT features)
+    
+    Use `@timestamp` as the time field.
+  </Step>
+  
+  <Step title="Import Dashboards">
+    Navigate to **Management → Saved Objects → Import** and import:
+    
+    ```bash
+    ~/safe-networking/install/kibana/export.json
+    ```
+    
+    Select the appropriate index patterns when prompted.
+  </Step>
+</Steps>
+
+### Available Dashboards
+
+After importing, you'll have access to several pre-built dashboards:
+
+- **Safe Networking Overview**: High-level threat summary
+- **DNS Threat Analysis**: Detailed DNS threat events and malware families
+- **IoT Threat Detection**: IoT-specific threat intelligence
+- **GTP/SCTP Events**: Mobile network event analysis
+- **Malware Timeline**: Temporal analysis of malware detections
+
+## Verify Event Enrichment
+
+To verify that SafeNetworking is enriching events with AutoFocus data:
+
+<Steps>
+  <Step title="Generate DNS Traffic">
+    Generate some DNS queries on your network that will be logged by the firewall.
+  </Step>
+  
+  <Step title="Check Elasticsearch">
+    Query Elasticsearch for recent threat events:
+    
+    ```bash
+    curl -X GET "localhost:9200/threat-*/_search?pretty" -H 'Content-Type: application/json' -d'
+    {
+      "query": {
+        "match": {
+          "ThreatCategory": "dns"
+        }
+      },
+      "size": 5,
+      "sort": [{"@timestamp": "desc"}]
+    }'
+    ```
+  </Step>
+  
+  <Step title="Verify Enrichment">
+    Look for enriched fields in the response such as:
+    - `malware_family`
+    - `tag_groups`
+    - `confidence_level`
+    - Domain reputation data
+  </Step>
+</Steps>
+
+## CLI Commands
+
+SafeNetworking provides several CLI commands for management:
+
+```bash
+# Start SafeNetworking
+./sfn start
+
+# Check version
+./sfn version
+
+# Admin functions (export data)
+./sfn admin --datadump --index threat-* --sortfield @timestamp --outfile output.txt
+
+# IoT data dump
+./sfn iot --datadump
+
+# Load CSV data into Elasticsearch
+./sfn load <csvfile> <index-name>
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="SafeNetworking won't start - API key error">
+    If you see: `CRITICAL - API Key for Autofocus is not set in .panrc, exiting`
+    
+    **Solution**: Edit `~/.panrc` and set your `AUTOFOCUS_API_KEY`
+  </Accordion>
+  
+  <Accordion title="No events appearing in Elasticsearch">
+    **Check**:
+    1. Firewall syslog configuration is correct
+    2. Logstash is listening: `netstat -tuln | grep 5514`
+    3. No firewall rules blocking UDP 5514
+    4. Check Logstash logs: `/var/log/logstash/logstash-plain.log`
+  </Accordion>
+  
+  <Accordion title="Elasticsearch connection errors">
+    **Check**:
+    1. Elasticsearch is running: `curl localhost:9200`
+    2. Check Elasticsearch logs: `/var/log/elasticsearch/`
+    3. Verify disk space and memory available
+  </Accordion>
+  
+  <Accordion title="High AutoFocus API point usage">
+    SafeNetworking caches domain information to reduce API calls. You can adjust caching behavior in `.panrc`:
+    
+    ```python
+    # Cache domain info for 30 days (default)
+    DNS_DOMAIN_INFO_MAX_AGE = 30
+    
+    # Reduce concurrent processes
+    DNS_POOL_COUNT = 8  # Default is 16
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Full Installation Guide" icon="book" href="/installation">
+    Learn about advanced configuration options and production deployment best practices.
+  </Card>
+  
+  <Card title="Configuration Reference" icon="sliders" href="/configuration/autofocus-api">
+    Detailed reference for all configuration parameters in `.panrc`.
+  </Card>
+</CardGroup>
+
+<Tip>
+For production deployments, consider setting up SafeNetworking as a systemd service and configuring log rotation for the SafeNetworking application logs.
+</Tip>

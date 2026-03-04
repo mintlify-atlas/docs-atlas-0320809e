@@ -1,0 +1,152 @@
+---
+title: 'sfn admin'
+description: 'Administrative CLI for curating and managing SafeNetworking data'
+---
+
+## Overview
+
+The `sfn admin` command provides administrative functionality for managing SafeNetworking data stored in ElasticSearch. It allows you to export and inspect data from various indices.
+
+## Command Syntax
+
+```bash
+sfn admin [OPTIONS]
+```
+
+## Description
+
+The admin command enables data curation and export operations. Currently, it supports dumping all documents from a specified ElasticSearch index to a file, with configurable sorting.
+
+## Options
+
+<ParamField path="--datadump" type="flag">
+  Export all documents from the specified index. Must be used with `--index` and `--sortfield` options.
+  
+  **Type:** Flag (no value required)
+  
+  **Example:** `--datadump`
+</ParamField>
+
+<ParamField path="--index" type="string" default=".kibana">
+  Specify the ElasticSearch index to work with.
+  
+  **Default:** `.kibana`
+  
+  **Example:** `--index sfn-dns-events`
+</ParamField>
+
+<ParamField path="--sortfield" type="string" default="@timestamp">
+  Field name to sort documents by when retrieving from the index.
+  
+  **Default:** `@timestamp`
+  
+  **Example:** `--sortfield time.keyword`
+</ParamField>
+
+<ParamField path="--outfile" type="string" default="admin_out.txt">
+  Output filename where exported data will be saved.
+  
+  **Default:** `admin_out.txt`
+  
+  **Example:** `--outfile dns_export.txt`
+</ParamField>
+
+## Usage Examples
+
+### Export DNS Events
+
+Dump all DNS events from the SafeNetworking DNS index:
+
+```bash
+sfn admin --datadump --index sfn-dns-events --sortfield @timestamp --outfile dns_data.txt
+```
+
+### Export IoT Intelligence Data
+
+Export IoT honeypot threat intelligence sorted by time:
+
+```bash
+sfn admin --datadump --index sfn-iot-details --sortfield time.keyword --outfile iot_intel.txt
+```
+
+### Export Kibana Configuration
+
+Export Kibana dashboards and visualizations (default index):
+
+```bash
+sfn admin --datadump --sortfield @timestamp --outfile kibana_backup.txt
+```
+
+### Custom Index Export
+
+Export data from a custom index with specific sorting:
+
+```bash
+sfn admin --datadump --index my-custom-index --sortfield event_time --outfile custom_export.txt
+```
+
+## Expected Output
+
+When running with `--datadump`, the command will:
+
+1. Connect to ElasticSearch
+2. Retrieve all documents from the specified index
+3. Sort by the specified field
+4. Write each document to the output file
+
+No console output is displayed; all data is written to the specified file.
+
+### Output File Format
+
+The output file contains raw Python dictionary representations of ElasticSearch documents:
+
+```python
+{'_index': 'sfn-dns-events', '_id': 'abc123', '_source': {'domain': 'malicious.com', 'ip': '192.0.2.1', '@timestamp': '2026-03-04T12:00:00Z'}}
+{'_index': 'sfn-dns-events', '_id': 'def456', '_source': {'domain': 'suspicious.net', 'ip': '198.51.100.1', '@timestamp': '2026-03-04T12:05:00Z'}}
+```
+
+## Common Use Cases
+
+### Data Backup
+
+Regularly export critical indices for backup purposes:
+
+```bash
+sfn admin --datadump --index sfn-dns-events --outfile backup_$(date +%Y%m%d).txt
+```
+
+### Debugging
+
+Inspect the structure and content of documents in an index:
+
+```bash
+sfn admin --datadump --index sfn-iot-details --sortfield time.keyword --outfile debug_iot.txt
+```
+
+### Data Migration
+
+Export data from one SafeNetworking instance to import into another:
+
+```bash
+sfn admin --datadump --index sfn-threat-intel --outfile migration_data.txt
+```
+
+## Notes
+
+<Info>
+  The `--datadump` flag requires both `--index` and `--sortfield` to be specified for proper operation.
+</Info>
+
+<Warning>
+  Large indices may produce very large output files. Monitor disk space when exporting extensive datasets.
+</Warning>
+
+<Note>
+  The default index `.kibana` is typically used for Kibana configuration data, not SafeNetworking operational data.
+</Note>
+
+## Related Commands
+
+- [`sfn start`](/cli/start) - Start the SafeNetworking application
+- [`sfn iot`](/cli/iot) - Query IoT threat intelligence (formatted output)
+- [`sfn load`](/cli/load) - Load CSV data into ElasticSearch indices

@@ -1,0 +1,178 @@
+---
+title: 'sfn iot'
+description: 'CLI for accessing IoT honeypot threat intelligence data'
+---
+
+## Overview
+
+The `sfn iot` command provides access to IoT honeypot threat intelligence data stored in SafeNetworking. It retrieves information about malicious IPs and their associated threat tags from the integrated IoT honeypot system.
+
+## Command Syntax
+
+```bash
+sfn iot [OPTIONS]
+```
+
+## Description
+
+This command queries the `sfn-iot-details` index in ElasticSearch to retrieve threat intelligence gathered from IoT honeypots. The data includes malicious IP addresses and their associated threat classifications.
+
+## Options
+
+<ParamField path="--datadump" type="flag">
+  Returns the last 9,999 entries of internal honeypot information, formatted as CSV output.
+  
+  **Type:** Flag (no value required)
+  
+  **Output Format:** `ip,threat_tag`
+  
+  **Example:** `--datadump`
+</ParamField>
+
+## Usage Examples
+
+### Retrieve IoT Threat Intelligence
+
+Dump all recent IoT honeypot detections:
+
+```bash
+sfn iot --datadump
+```
+
+### Save Output to File
+
+Redirect the output to a CSV file for analysis:
+
+```bash
+sfn iot --datadump > iot_threats.csv
+```
+
+### Filter Specific IPs
+
+Combine with grep to find specific IP addresses:
+
+```bash
+sfn iot --datadump | grep "192.168.1"
+```
+
+### Count Threats by Type
+
+Analyze threat distribution:
+
+```bash
+sfn iot --datadump | cut -d',' -f2 | sort | uniq -c | sort -rn
+```
+
+## Expected Output
+
+The command outputs comma-separated values (CSV) format with two fields:
+
+```
+192.0.2.15,Mirai Botnet
+198.51.100.42,Brute Force SSH
+203.0.113.87,Port Scanner
+192.0.2.201,IoT Malware
+198.51.100.123,DDoS Source
+```
+
+### Output Fields
+
+<ResponseField name="ip" type="string">
+  The malicious IP address detected by the honeypot system
+</ResponseField>
+
+<ResponseField name="public_tag_name" type="string">
+  Human-readable threat classification or tag associated with the IP address
+</ResponseField>
+
+## Data Source
+
+The IoT data is sourced from:
+
+- **Index:** `sfn-iot-details`
+- **Sort Field:** `time.keyword` (chronological order)
+- **Limit:** Last 9,999 entries
+
+## Common Threat Tags
+
+Typical threat classifications you may see include:
+
+- **Mirai Botnet** - IoT devices infected with Mirai malware
+- **Brute Force SSH** - Automated SSH login attempts
+- **Telnet Scanner** - Scanning for open Telnet services
+- **Port Scanner** - Network reconnaissance activity
+- **DDoS Source** - Distributed Denial of Service attack origin
+- **IoT Malware** - Generic IoT malware infections
+- **Credential Stuffing** - Automated credential testing
+
+## Integration with Background Processing
+
+When SafeNetworking is running (via `sfn start`), the IoT processing thread:
+
+1. Continuously retrieves updated IoT honeypot data
+2. Stores it in the `sfn-iot-details` index
+3. Enriches incoming network events with IoT threat intelligence
+4. Updates at intervals defined by `IOT_POOL_TIME` configuration
+
+## Use Cases
+
+### Threat Intelligence Feed
+
+Export IoT threats for integration with external security tools:
+
+```bash
+sfn iot --datadump > /var/log/safenetworking/iot_threats_$(date +%Y%m%d).csv
+```
+
+### Firewall Rule Generation
+
+Extract IPs for automated firewall blocking:
+
+```bash
+sfn iot --datadump | cut -d',' -f1 | sort -u > malicious_ips.txt
+```
+
+### Threat Analysis
+
+Identify trending threat types:
+
+```bash
+sfn iot --datadump | awk -F',' '{print $2}' | sort | uniq -c | sort -rn | head -10
+```
+
+### IP Reputation Checking
+
+Check if a specific IP is flagged:
+
+```bash
+sfn iot --datadump | grep "203.0.113.87"
+```
+
+## Notes
+
+<Info>
+  The command retrieves the most recent 9,999 entries. For complete historical data, use [`sfn admin --datadump`](/cli/admin) with the `sfn-iot-details` index.
+</Info>
+
+<Note>
+  The IoT honeypot data is continuously updated by the background processing thread when SafeNetworking is running.
+</Note>
+
+<Tip>
+  Combine this command with standard Unix tools (grep, awk, sort) for powerful threat analysis workflows.
+</Tip>
+
+## Differences from Admin Command
+
+Unlike `sfn admin --datadump`, the `sfn iot` command:
+
+- **Formatted Output:** Returns clean CSV format (not raw Python dictionaries)
+- **Specific Index:** Always queries `sfn-iot-details`
+- **Limited Fields:** Only returns IP and threat tag
+- **User-Friendly:** Designed for immediate use in scripts and analysis
+
+## Related Commands
+
+- [`sfn admin`](/cli/admin) - Export raw IoT data with all fields
+- [`sfn start`](/cli/start) - Start background IoT threat intelligence collection
+- [`sfn load`](/cli/load) - Load custom threat intelligence data

@@ -1,0 +1,474 @@
+---
+title: 'Data Model'
+description: 'Elasticsearch index structure and document schemas in SafeNetworking'
+---
+
+## Overview
+
+SafeNetworking stores all data in Elasticsearch using a structured document model. The system uses five primary indices for threat events, domain caching, IoT intelligence, tag metadata, and AutoFocus API tracking.
+
+## Index Architecture
+
+### Index Naming Conventions
+
+<CardGroup cols={2}>
+  <Card title="threat-*" icon="shield-halved">
+    Time-based indices for firewall threat events (DNS, URL)
+  </Card>
+  <Card title="sfn-domain-details" icon="globe">
+    Cached domain reputation data from AutoFocus
+  </Card>
+  <Card title="sfn-iot-details" icon="microchip">
+    IoT threat intelligence from honeypot database
+  </Card>
+  <Card title="sfn-tag-details" icon="tag">
+    AutoFocus tag metadata cache
+  </Card>
+  <Card title="af-details" icon="chart-simple">
+    AutoFocus API quota tracking (single document)
+  </Card>
+</CardGroup>
+
+## Document Schemas
+
+### DNS Event Document
+
+Primary event document for DNS-based threats stored in `threat-*` indices.
+
+**Document Class**: `DNSEventDoc` (defined in `project/dns/dns.py:58-88`)
+
+```python
+class DNSEventDoc(DocType):
+    '''
+    Each event is its own entity in the DB
+    '''
+    SFN = Object(SFNDNS)
+    
+    class Index:
+        name = 'threat-*'
+```
+
+#### SFN Object Schema
+
+The `SFN` nested object contains SafeNetworking enrichment data:
+
+```python
+class SFNDNS(InnerDoc):
+    event_type = Text()                                    # "DNS"
+    domain_name = Text(analyzer='snowball', fields={'raw': Keyword()})
+    device_name = Text(analyzer='snowball', fields={'raw': Keyword()})
+    host = Text(analyzer='snowball', fields={'raw': Keyword()})
+    threat_id = Text(analyzer='snowball')
+    threat_name = Text(analyzer='snowball')
+    tag_name = Text(fields={'raw': Keyword()})            # AutoFocus tag
+    tag_class = Text(fields={'raw': Keyword()})           # campaign/actor/malware_family
+    tag_group = Text(fields={'raw': Keyword()})           # Tag category
+    tag_description = Text(analyzer='snowball')
+    public_tag_name = Text(analyzer='snowball')           # Display name
+    confidence_level = Integer()                          # 0-90% confidence
+    sample_date = Date()                                  # Most recent sample date
+    file_type = Text(fields={'raw': Keyword()})           # Malware file type
+    updated_at = Date()                                   # Enrichment timestamp
+    processed = Integer()                                 # Processing state
+    src_ip = Ip()
+    dst_ip = Ip()
+```
+
+Defined in `project/dns/dns.py:37-56`
+
+#### Processing States
+
+The `processed` field indicates event enrichment status:
+
+| Value | State | Description |
+|-------|-------|-------------|
+| `0` | Unprocessed | Event awaiting enrichment |
+| `1` | Enriched | Successfully enriched with AutoFocus data |
+| `55` | No Tags | Domain found but no threat tags available |
+
+From `project/dns/runner.py:170-174`
+
+#### Example Document
+
+```json
+{
+  "@timestamp": "2026-03-04T10:23:45.123Z",
+  "SFN": {
+    "event_type": "DNS",
+    "domain_name": "malicious.example.com",
+    "device_name": "PA-VM-001",
+    "host": "192.168.1.100",
+    "tag_name": "Unit42.Gootkit",
+    "public_tag_name": "Gootkit",
+    "tag_class": "malware_family",
+    "tag_group": "Banking Trojan",
+    "tag_description": "Gootkit is a banking trojan...",
+    "confidence_level": 90,
+    "sample_date": "2026-03-03T08:15:30",
+    "file_type": "PE32",
+    "updated_at": "2026-03-04T10:23:46",
+    "processed": 1,
+    "src_ip": "192.168.1.100",
+    "dst_ip": "203.0.113.42"
+  }
+}
+```
+
+### Domain Details Document
+
+Cached domain intelligence stored in `sfn-domain-details` index.
+
+**Document Class**: `DomainDetailsDoc` (defined in `project/dns/dns.py:5-34`)
+
+```python
+class DomainDetailsDoc(DocType):
+    '''
+    Document storage for domain cache
+    '''
+    name = Text(analyzer='snowball', fields={'raw': Keyword()})
+    tags = Keyword()                    # List of tag tuples
+    doc_created = Date()
+    doc_updated = Date()
+    processed = Integer()
+
+    class Index:
+        name = 'sfn-domain-details'
+```
+
+#### Tags Field Structure
+
+The `tags` field stores a list of tuples containing sample and tag information:
+
+```python
+[
+  (
+    "2026-03-03T08:15:30",              # sample_date
+    "PE32",                             # file_type
+    [
+      (
+        "Gootkit",                      # public_tag_name
+        "Unit42.Gootkit",              # tag_name
+        "malware_family",              # tag_class
+        "Banking Trojan",              # tag_group
+        "Gootkit is a banking..."      # description
+      )
+    ]
+  )
+]
+```
+
+Constructed in `project/dns/dnsutils.py:440-448`
+
+#### Cache Lifecycle
+
+<Steps>
+  <Step title="Cache Miss">
+    Event processor queries `sfn-domain-details` for domain (`project/dns/runner.py:54-56`)
+  </Step>
+  <Step title="AutoFocus Lookup">
+    If not cached or expired, query AutoFocus API for domain samples (`project/dns/dnsutils.py:343-459`)
+  </Step>
+  <Step title="Tag Processing">
+    Extract tags from samples and fetch tag metadata (`project/dns/dnsutils.py:131-150`)
+  </Step>
+  <Step title="Cache Storage">
+    Store domain details with `doc_updated` timestamp (`project/dns/dnsutils.py:506-512`)
+  </Step>
+  <Step title="Cache Validation">
+    Check age on subsequent lookups against `DNS_DOMAIN_INFO_MAX_AGE` (default: 30 days)
+  </Step>
+</Steps>
+
+From `project/dns/dnsutils.py:462-520`
+
+### IoT Event Document
+
+**Document Class**: `IoTEventDoc` (defined in `project/iot/iot.py:66-96`)
+
+```python
+class IoTEventDoc(DocType):
+    '''
+    Each event is its own entity in the DB
+    '''
+    IoT = Object(SFNIOT)
+    
+    class Index:
+        name = 'iot-*'
+```
+
+The `SFNIOT` inner document has the same structure as `SFNDNS` but is used for IoT-specific events.
+
+### IoT Details Document
+
+Cached IoT threat intelligence stored in `sfn-iot-details` index.
+
+**Document Class**: `IoTDetailsDoc` (defined in `project/iot/iot.py:5-41`)
+
+```python
+class IoTDetailsDoc(DocType):
+    '''
+    Document storage for IoT IP cache
+    '''
+    id = Text(analyzer='snowball', fields={'raw': Keyword()})
+    time = Keyword()                    # Observation timestamp
+    ip = Ip()                           # Malicious IP address
+    filetype = Text()                   # Malware file type
+    tag_name = Text()                   # Normalized tag name
+    public_tag_name = Text()            # Display name
+    tag_description = Text()
+    tag_class = Text()                  # Threat classification
+    tag_group_name = Text()             # Threat category
+
+    class Index:
+        name = 'sfn-iot-details'
+```
+
+#### Family Name Normalization
+
+IoT malware families are normalized to Unit42 naming conventions:
+
+```python
+def __normalizeFamilyInfo(familyInfo):
+    if (familyInfo['family'] == 'mirai') and (familyInfo['filetype'] == "elf"):
+        return "Unit42.ELFMirai", "ELFMirai"
+    elif (familyInfo['family'] == 'xorddos') and (familyInfo['filetype'] == "elf"):
+        return "Commodity.XorDDoS", "XorDDoS"
+    # ...
+```
+
+From `project/iot/runner.py:34-62`
+
+#### Example Document
+
+```json
+{
+  "id": "iot-12345",
+  "time": "2026-03-04 09:15:30",
+  "ip": "198.51.100.42",
+  "filetype": "elf",
+  "tag_name": "Unit42.ELFMirai",
+  "public_tag_name": "ELFMirai",
+  "tag_description": "Mirai IoT botnet malware",
+  "tag_class": "malware_family",
+  "tag_group_name": "IoT Botnet"
+}
+```
+
+### Tag Details Document
+
+Cached AutoFocus tag metadata stored in `sfn-tag-details` index.
+
+**Document Class**: `TagDetailsDoc` (defined in `project/dns/dns.py:126-157`)
+
+```python
+class TagDetailsDoc(DocType):
+    '''
+    Stores/caches information about each tag in the DB
+    '''
+    name = Text(analyzer='snowball', fields={'raw': Keyword()})
+    tag = Keyword()                     # Full tag object from AF
+    tag_groups = Keyword()              # Tag categorization
+    doc_created = Date()
+    doc_updated = Date()
+    processed = Integer()
+
+    class Index:
+        name = 'sfn-tag-details'
+```
+
+#### Tag Object Structure
+
+The `tag` field stores the complete AutoFocus tag response:
+
+```json
+{
+  "tag_name": "Unit42.Gootkit",
+  "public_tag_name": "Gootkit",
+  "tag_class": "malware_family",
+  "description": "Gootkit is a banking trojan that targets financial institutions..."
+}
+```
+
+#### Tag Groups
+
+The `tag_groups` field provides hierarchical categorization:
+
+```json
+[
+  {
+    "tag_group_name": "Banking Trojan",
+    "description": "Malware designed to steal financial credentials"
+  }
+]
+```
+
+From `project/lib/sfnutils.py:72-167`
+
+<Note>
+If a tag is not found in AutoFocus, SafeNetworking creates a placeholder cache entry with `tag_class: "Tag not found in AF"` to prevent repeated failed lookups (`project/lib/sfnutils.py:149-158`).
+</Note>
+
+### AutoFocus Details Document
+
+Tracks AutoFocus API quota usage. Single document with ID `af-details` in `af-details` index.
+
+**Document Class**: `AFDetailsDoc` (defined in `project/dns/dns.py:91-123`)
+
+```python
+class AFDetailsDoc(DocType):
+    '''
+    Stores the information returned from AutoFocus about API logistics
+    '''
+    daily_points = Integer()                # Total daily quota
+    daily_points_remaining = Integer()      # Points left today
+    minute_points = Integer()               # Per-minute quota
+    minute_points_remaining = Integer()     # Points left this minute
+    minute_bucket_start = Date()            # Minute window start
+    daily_bucket_start = Date()             # Daily window start
+
+    class Index:
+        name = 'af-details'
+        id = 'af-details'
+```
+
+#### Example Document
+
+```json
+{
+  "_id": "af-details",
+  "_source": {
+    "daily_points": 50000,
+    "daily_points_remaining": 32451,
+    "minute_points": 16,
+    "minute_points_remaining": 8,
+    "minute_bucket_start": "2026-03-04T10:23:00",
+    "daily_bucket_start": "2026-03-04T00:00:00"
+  }
+}
+```
+
+Updated every `AF_POOL_TIME` seconds (default: 600) by the AutoFocus monitoring thread.
+
+## Field Types and Analyzers
+
+### Text vs Keyword Fields
+
+SafeNetworking uses dual-field indexing for searchability:
+
+```python
+domain_name = Text(analyzer='snowball', fields={'raw': Keyword()})
+```
+
+- **Text (analyzed)**: Full-text search with stemming (e.g., "banking" matches "bank")
+- **Keyword (exact)**: Aggregations, sorting, exact matching (e.g., "example.com")
+
+### Date Handling
+
+All date fields use Elasticsearch `Date` type with ISO 8601 format:
+
+```python
+doc_updated = datetime.datetime.now().replace(microsecond=0).isoformat(' ')
+# Output: "2026-03-04 10:23:45"
+```
+
+From `project/dns/dnsutils.py:469`
+
+## Query Patterns
+
+### Finding Unprocessed Events
+
+```python
+eventSearch = Search(index="threat-*") \
+    .query("match", tags="DNS") \
+    .query("match", ** { "SFN.processed":0})  \
+    .sort({"@timestamp": {"order" : "desc"}})
+eventSearch = eventSearch[:1000]
+```
+
+From `project/dns/runner.py:34-38`
+
+### Checking Domain Cache
+
+```python
+domainSearch = Search(index="sfn-domain-details") \
+    .query("match", name=domainName)
+if domainSearch.execute():
+    # Cache hit - use cached data
+else:
+    # Cache miss - query AutoFocus
+```
+
+From `project/dns/runner.py:54-65`
+
+### Retrieving Latest IoT Update
+
+```python
+eventSearch = Search(index="sfn-iot-details") \
+    .sort({"time.keyword": {"order" : "desc"}})
+eventSearch = eventSearch[:1]
+latestDoc = eventSearch.execute().hits[0]
+```
+
+From `project/lib/sfnutils.py:18-24`
+
+## Data Retention
+
+<AccordionGroup>
+  <Accordion title="Threat Events (threat-*)">
+    Retention managed by Elasticsearch Index Lifecycle Management (ILM). Recommend 90-180 day retention based on compliance requirements.
+  </Accordion>
+  
+  <Accordion title="Domain Cache (sfn-domain-details)">
+    Cache validated on read. Entries older than `DNS_DOMAIN_INFO_MAX_AGE` (30 days) trigger re-query to AutoFocus.
+  </Accordion>
+  
+  <Accordion title="Tag Cache (sfn-tag-details)">
+    Cache validated on read. Entries older than `DOMAIN_TAG_INFO_MAX_AGE` (120 days) trigger re-query to AutoFocus.
+  </Accordion>
+  
+  <Accordion title="IoT Cache (sfn-iot-details)">
+    Continuously updated from external honeypot database. No automatic expiration.
+  </Accordion>
+  
+  <Accordion title="AF Details (af-details)">
+    Single document updated every 10 minutes. Historical data not retained.
+  </Accordion>
+</AccordionGroup>
+
+## Index Management
+
+### Manual Index Creation
+
+Indices are created automatically on first document insertion, but you can pre-create with custom settings:
+
+```bash
+curl -X PUT "localhost:9200/sfn-domain-details?pretty" -H 'Content-Type: application/json' -d'
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1
+  }
+}
+'
+```
+
+### Monitoring Index Size
+
+```bash
+# Check index sizes
+curl "localhost:9200/_cat/indices/sfn-*?v&s=index"
+
+# Check document counts
+curl "localhost:9200/sfn-domain-details/_count?pretty"
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how components interact in the system
+  </Card>
+  <Card title="Event Processing" icon="gears" href="/concepts/event-processing">
+    Learn about enrichment workflows and scoring algorithms
+  </Card>
+</CardGroup>
