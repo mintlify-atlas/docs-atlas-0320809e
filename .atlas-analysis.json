@@ -1,0 +1,107 @@
+{
+  "projectType": "data-platform",
+  "projectName": "SafeNetworking",
+  "projectDescription": "A threat intelligence platform that enriches Palo Alto Networks firewall logs with malware intelligence from AutoFocus.",
+  "theme": "sequoia",
+  "primaryColor": "#e25c23",
+  "lightColor": "#8c5c34",
+  "darkColor": "#1c141f",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/data-model",
+              "concepts/event-processing"
+            ]
+          },
+          {
+            "group": "Event Processing",
+            "pages": [
+              "processing/dns-enrichment",
+              "processing/iot-threats",
+              "processing/gtp-sctp"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/autofocus-api",
+              "configuration/elasticsearch",
+              "configuration/logstash-pipelines"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/running-safenetworking",
+              "operations/monitoring",
+              "operations/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/start",
+              "cli/admin",
+              "cli/iot",
+              "cli/load"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integration",
+        "groups": [
+          {
+            "group": "Setup",
+            "pages": [
+              "integration/firewall-configuration",
+              "integration/kibana-dashboards"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "DNS threat event enrichment with AutoFocus Threat Intelligence",
+    "IoT threat detection from honeypot intelligence",
+    "GTP/SCTP event logging for service providers",
+    "Elasticsearch-based threat data storage",
+    "Kibana visualization dashboards",
+    "Multi-threaded background event processing",
+    "Malware tag classification with confidence scoring",
+    "CLI for administration and data loading"
+  ],
+  "publicApiSurface": [
+    "sfn start - Start SafeNetworking application",
+    "sfn version - Display version information",
+    "sfn admin - Administrative CLI for curating SFN",
+    "sfn iot - CLI for getting IoT information",
+    "sfn load - Load CSV file into Elasticsearch",
+    "processDNS() - Process DNS threat events",
+    "processIoT() - Process IoT threat events",
+    "getDomainDoc() - Retrieve domain document from Elasticsearch",
+    "assessTags() - Assess threat tags for confidence scoring",
+    "DNSEventDoc - Elasticsearch document class for DNS events",
+    "IoTEventDoc - Elasticsearch document class for IoT events"
+  ]
+}
